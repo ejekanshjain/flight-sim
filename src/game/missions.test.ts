@@ -1,0 +1,135 @@
+import { expect, test } from 'bun:test'
+import { Vector3 } from 'three'
+import { HANGAR, KNOT } from '../sim/aircraft'
+import { FlightSim } from '../sim/flight-sim'
+import { APPROACHES, onCentreline, pathAltitude } from '../world/approaches'
+import { AIRPORTS, fromStrip, heightAt, ISLAND_GROUND } from '../world/island'
+import { landingAdvice } from './coach'
+import { MISSIONS, MissionRunner } from './missions'
+import { Navigator } from './navigation'
+import { Pilot } from './pilot'
+
+const STEP = 1 / 120
+const CALM = new Vector3()
+
+test('every gate stands clear of the ground and close enough to the next to fly', () => {
+  for (const mission of MISSIONS) {
+    const gates = mission.gates ?? []
+    gates.forEach((gate, i) => {
+      expect(gate.y - gate.radius).toBeGreaterThan(Math.max(heightAt(gate.x, gate.z), 0))
+      const next = gates[i + 1]
+      if (next) expect(Math.hypot(next.x - gate.x, next.z - gate.z)).toBeLessThan(20_000)
+    })
+  }
+})
+
+test('a scripted pilot passes the takeoff tutorial', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'takeoff')
+  const spec = HANGAR.find(candidate => candidate.id === 'c172')
+  if (!mission || !spec || mission.start.kind !== 'runway') throw new Error('Missing mission')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  // Line up as the game does: 150 m in from the start of the main runway
+  const runway = AIRPORTS.find(airport => airport.code === 'CBI')?.runways[0]
+  if (!runway) throw new Error('Missing runway')
+  const start = fromStrip(runway, -runway.length / 2 + 150, 0)
+  sim.placeOnGround(start.x, start.z, (runway.heading * Math.PI) / 180)
+  const pilot = new Pilot()
+  pilot.resetForGround(sim, false)
+  const nav = new Navigator()
+  const runner = new MissionRunner()
+  runner.start(mission, sim)
+  let result = null
+  const press = (code: string) => {
+    pilot.press(code, false, sim)
+    pilot.release(code)
+  }
+  for (let time = 0; time < 200 && !result && !sim.crash; time += STEP) {
+    if (time > 0.5 && pilot.controls.engineSwitches[0] === false) press('KeyI')
+    if (sim.engineRunning && pilot.controls.parkingBrake) press('KeyP')
+    pilot.controls.throttle = sim.engineRunning ? 1 : 0
+    // Rotate at 55 knots, then hold a gentle climb
+    const knots = sim.indicatedAirspeed / 0.5144
+    pilot.controls.pitch = knots > 55 ? Math.max(-1, Math.min(1, (0.12 - sim.pitch) * 4)) : 0
+    pilot.controls.roll = Math.max(-1, Math.min(1, -sim.bank * 2))
+    sim.step(STEP, pilot.controls, CALM)
+    result = runner.update(STEP, { sim, controls: pilot.controls, pilot, nav, parkedAt: null })
+  }
+  expect(sim.crash).toBeNull()
+  expect(result).toEqual({ passed: true })
+})
+
+const KEY_CODES: Record<string, string> = {
+  '↑': 'ArrowUp',
+  '↓': 'ArrowDown',
+  '←': 'ArrowLeft',
+  '→': 'ArrowRight',
+  W: 'KeyW',
+  S: 'KeyS',
+  A: 'KeyA',
+  D: 'KeyD',
+  E: 'KeyE',
+  Q: 'KeyQ',
+  Space: 'Space'
+}
+
+test('a pilot who only follows the coach passes the landing tutorial', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'landing')
+  const spec = HANGAR.find(candidate => candidate.id === 'c172')
+  if (!mission || !spec || mission.start.kind !== 'approach') throw new Error('Missing mission')
+  const { start } = mission
+  const approach = APPROACHES.find(candidate => candidate.id === start.approach)
+  if (!approach) throw new Error('Missing approach')
+  // Start as the game does: on the glide path, trimmed, with full flaps
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  const { x, z } = onCentreline(approach.end, start.distance)
+  const heading = (approach.end.heading * Math.PI) / 180
+  sim.placeInAir(
+    x,
+    pathAltitude(approach.end, approach.glide, start.distance),
+    z,
+    heading,
+    start.speed * KNOT
+  )
+  const pilot = new Pilot()
+  pilot.resetForAir(spec, sim)
+  const flapNotch = start.flapNotch ?? 0
+  Object.assign(pilot.controls, {
+    flapNotch,
+    ...sim.settleOnPath(approach.glide, flapNotch, true, CALM)
+  })
+  const nav = new Navigator()
+  nav.select(approach, sim)
+  const runner = new MissionRunner()
+  runner.start(mission, sim)
+  // Every 0.3 s, like a pilot reading the coach: hold the keys it says to hold, tap the others
+  const held = new Set<string>()
+  let result = null
+  for (let time = 0; time < 400 && !result && !sim.crash; time += STEP) {
+    if (Math.round(time / STEP) % 36 === 0) {
+      const text = landingAdvice(sim, nav, pilot)?.text ?? ''
+      const fine = text.includes('hold [Shift] and [↓]')
+      const hold = new Set<string>(fine ? ['ArrowDown'] : [])
+      for (const [, verb, key] of text.matchAll(/(tap|hold) \[([^\]]+)\]/gi)) {
+        const code = KEY_CODES[key]
+        if (!code) continue
+        if (verb.toLowerCase() === 'hold') hold.add(code)
+        else {
+          pilot.press(code, false, sim, nav)
+          pilot.update(0.15, sim, nav)
+          pilot.release(code)
+        }
+      }
+      for (const code of held) if (!hold.has(code)) pilot.release(code)
+      for (const code of hold) pilot.press(code, held.has(code), sim, nav, fine)
+      if (!fine) pilot.release('ShiftLeft')
+      held.clear()
+      for (const code of hold) held.add(code)
+    }
+    nav.update(sim)
+    pilot.update(STEP, sim, nav)
+    sim.step(STEP, pilot.controls, CALM)
+    result = runner.update(STEP, { sim, controls: pilot.controls, pilot, nav, parkedAt: null })
+  }
+  expect(sim.crash).toBeNull()
+  expect(result).toMatchObject({ passed: true })
+})
