@@ -21,6 +21,7 @@ test.each([
   ['b787', 'ILS 05 NGT'],
   ['a380', 'ILS 05 NGT'],
   ['concorde', 'ILS 05 NGT'],
+  ['b2', 'ILS 05 NGT'],
   ['c172', 'RNAV 28 MGC']
 ])('the %s autopilot flies the %s from off to the side down to 50 ft', (id, name) => {
   const spec = HANGAR.find(candidate => candidate.id === id)
@@ -70,47 +71,50 @@ test.each([
   expect(spoken).toContain('100')
 })
 
-test.each(['a320', 'b787'])('the %s autopilot lands itself and brakes on the centreline', id => {
-  const spec = HANGAR.find(candidate => candidate.id === id)
-  const approach = APPROACHES.find(candidate => candidate.id === 'ILS 05 NGT')
-  if (!spec || !approach) throw new Error(`Missing ${id}`)
-  const sim = new FlightSim(ISLAND_GROUND, spec)
-  const pilot = new Pilot()
-  const nav = new Navigator()
-  const start = onCentreline(approach.end, 20_000)
-  const heading = (approach.end.heading * Math.PI) / 180
-  sim.placeInAir(
-    start.x,
-    approach.fixes[1].altitude,
-    start.z,
-    heading,
-    spec.approachSpeed * KNOT * 1.3
-  )
-  pilot.resetForAir(spec)
-  nav.select(approach, sim)
-  pilot.flyApproach(true, sim, nav)
-  pilot.press('KeyX', false, sim)
-  pilot.controls.flapNotch = spec.flapLabels.length - 1
-  pilot.controls.gearDown = true
-  let sink = 0
-  let touchdown = -1
-  // The autopilot hands back once slowed to 30 knots on the runway
-  for (let time = 0; time < 600 && !sim.crash && pilot.autopilot.on; time += STEP) {
-    nav.update(sim)
-    pilot.update(STEP, sim, nav)
-    sim.step(STEP, pilot.controls, CALM)
-    if (!sim.onGround) sink = -sim.verticalSpeed
-    else if (touchdown < 0) touchdown = sink
+test.each(['a320', 'b787', 'b2'])(
+  'the %s autopilot lands itself and brakes on the centreline',
+  id => {
+    const spec = HANGAR.find(candidate => candidate.id === id)
+    const approach = APPROACHES.find(candidate => candidate.id === 'ILS 05 NGT')
+    if (!spec || !approach) throw new Error(`Missing ${id}`)
+    const sim = new FlightSim(ISLAND_GROUND, spec)
+    const pilot = new Pilot()
+    const nav = new Navigator()
+    const start = onCentreline(approach.end, 20_000)
+    const heading = (approach.end.heading * Math.PI) / 180
+    sim.placeInAir(
+      start.x,
+      approach.fixes[1].altitude,
+      start.z,
+      heading,
+      spec.approachSpeed * KNOT * 1.3
+    )
+    pilot.resetForAir(spec)
+    nav.select(approach, sim)
+    pilot.flyApproach(true, sim, nav)
+    pilot.press('KeyX', false, sim)
+    pilot.controls.flapNotch = spec.flapLabels.length - 1
+    pilot.controls.gearDown = true
+    let sink = 0
+    let touchdown = -1
+    // The autopilot hands back once slowed to 30 knots on the runway
+    for (let time = 0; time < 600 && !sim.crash && pilot.autopilot.on; time += STEP) {
+      nav.update(sim)
+      pilot.update(STEP, sim, nav)
+      sim.step(STEP, pilot.controls, CALM)
+      if (!sim.onGround) sink = -sim.verticalSpeed
+      else if (touchdown < 0) touchdown = sink
+    }
+    expect(sim.crash).toBeNull()
+    expect(sim.onGround).toBe(true)
+    // Under 400 ft/min, on the centreline, and still on the runway
+    expect(touchdown).toBeGreaterThan(-0.5)
+    expect(touchdown).toBeLessThan(2)
+    expect(Math.abs(nav.guidance.across)).toBeLessThan(5)
+    expect(isPaved(sim.position.x, sim.position.z)).toBe(true)
+    expect(sim.groundSpeed).toBeLessThan(16)
   }
-  expect(sim.crash).toBeNull()
-  expect(sim.onGround).toBe(true)
-  // Under 400 ft/min, on the centreline, and still on the runway
-  expect(touchdown).toBeGreaterThan(-0.5)
-  expect(touchdown).toBeLessThan(2)
-  expect(Math.abs(nav.guidance.across)).toBeLessThan(5)
-  expect(isPaved(sim.position.x, sim.position.z)).toBe(true)
-  expect(sim.groundSpeed).toBeLessThan(16)
-})
+)
 
 test('level change climbs to the altitude knob at the speed knob, then holds it', () => {
   const spec = HANGAR.find(candidate => candidate.id === 'a320')
@@ -176,6 +180,9 @@ test.each([
   // Short hops end their route before reaching the cruise altitude
   if (fromCode === 'NGT') expect(reachedCruise).toBe(true)
   // Lined up and slowed to near the approach speed for the flare
+  // Down to 50 ft over the runway's near end, not past it
+  expect(nav.guidance.along).toBeGreaterThan(-300)
+  expect(nav.guidance.along).toBeLessThan(700)
   expect(sim.indicatedAirspeed / KNOT).toBeLessThan(spec.approachSpeed * 1.2)
   expect(atMinimums(sim, nav)).toBe(true)
   expect(nav.approach?.end.airport).toBe(to)

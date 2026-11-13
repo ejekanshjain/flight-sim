@@ -5,8 +5,11 @@ import {
   BufferGeometry,
   CanvasTexture,
   ConeGeometry,
+  DataTexture,
   DoubleSide,
   type Group,
+  LinearFilter,
+  LinearMipmapLinearFilter,
   type Quaternion,
   SRGBColorSpace,
   Vector3
@@ -22,6 +25,7 @@ import {
   type Stand,
   type Strip
 } from '../world/island'
+import { depthBias } from './logDepth'
 
 const QUARTER_TURN = Math.PI / 2
 type Patch = Strip & { y: number }
@@ -49,6 +53,55 @@ function patchGeometry(patches: Patch[]) {
   return geometry
 }
 
+/** A long painted line running the full length of a strip, by its distance from the centre. */
+type Line = { offset: number; width: number; color: string }
+
+/**
+ * Long lines running the length of strips, such as runway edge lines or taxiway
+ * centrelines, drawn as one see-through texture over each group of strips of a width. The
+ * texture fades a thin line smoothly with distance, where a separate thin shape would break
+ * up and shimmer once it covers less than a pixel.
+ */
+function lineOverlays(patches: Patch[], lines: (width: number) => Line[]) {
+  const widths = [...new Set(patches.map(patch => patch.width))]
+  return widths.map(width => {
+    const group = patches.filter(patch => patch.width === width)
+    const geometry = patchGeometry(group)
+    // Across the strip from one edge to the other; the lines run unchanged along it
+    const uv = new Float32Array(group.length * 8)
+    group.forEach((_, i) => uv.set([0, 0, 1, 0, 1, 1, 0, 1], i * 8))
+    geometry.setAttribute('uv', new BufferAttribute(uv, 2))
+    // Every texel carries the line colour, so faded edges stay that colour in the distance;
+    // only the opacity marks where a line is
+    const data = new Uint8Array(LINE_TEXTURE_SIZE * 4)
+    const pixels = LINE_TEXTURE_SIZE / width
+    for (const line of lines(width)) {
+      // The colour's sRGB bytes, as the texture stores them
+      const hex = Number.parseInt(line.color.slice(1), 16)
+      const rgb = [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255]
+      const from = Math.round((width / 2 + line.offset - line.width / 2) * pixels)
+      const to = Math.round((width / 2 + line.offset + line.width / 2) * pixels)
+      for (let x = 0; x < LINE_TEXTURE_SIZE; x++) {
+        const inside = x >= from && x < to
+        if (!inside && data[x * 4 + 3] > 0) continue
+        data.set([...rgb, inside ? 255 : 0], x * 4)
+      }
+    }
+    const texture = new DataTexture(data, LINE_TEXTURE_SIZE, 1)
+    texture.colorSpace = SRGBColorSpace
+    texture.generateMipmaps = true
+    texture.minFilter = LinearMipmapLinearFilter
+    texture.magFilter = LinearFilter
+    texture.anisotropy = 16
+    texture.needsUpdate = true
+    return { geometry, texture, width }
+  })
+}
+
+const LINE_TEXTURE_SIZE = 512
+const WHITE_PAINT = '#e2dfd5'
+const YELLOW_PAINT = '#e3b321'
+
 /** Rectangle placed by distances along and across another strip. */
 function mark(
   base: Strip,
@@ -61,13 +114,14 @@ function mark(
   return { ...fromStrip(base, along, across), heading: base.heading, length, width, y }
 }
 
-/** White paint on a runway: edge lines, centreline dashes, threshold bars, and aiming points. */
+/** White edge lines along both sides of a runway, painted into its surface. */
+const runwayEdges = (width: number): Line[] =>
+  [-1, 1].map(side => ({ offset: side * (width / 2 - 1.5), width: 0.9, color: WHITE_PAINT }))
+
+/** White paint on a runway: centreline dashes, threshold bars, and aiming points. */
 function runwayPaint(runway: Strip, y: number) {
   const paint: Patch[] = []
   const half = runway.length / 2
-  for (const side of [-1, 1]) {
-    paint.push(mark(runway, y, 0, side * (runway.width / 2 - 1.5), runway.length, 0.9))
-  }
   for (let along = -half + 125; along < half - 110; along += 50) {
     paint.push(mark(runway, y, along, 0, 30, 0.9))
   }
@@ -86,9 +140,12 @@ function runwayPaint(runway: Strip, y: number) {
   return paint
 }
 
-/** Yellow taxi lines: along every taxiway, and from the taxiway out to each parking stand. */
+/** Yellow centreline along a taxiway, painted into its surface. */
+const taxiCentreline = (): Line[] => [{ offset: 0, width: 0.5, color: YELLOW_PAINT }]
+
+/** Yellow taxi lines from the taxiway out to each parking stand, and the stop bars there. */
 function taxiPaint(airport: Airport, y: number) {
-  const paint: Patch[] = airport.taxiways.map(taxiway => ({ ...taxiway, width: 0.5, y }))
+  const paint: Patch[] = []
   for (const stand of [...airport.gates, ...airport.ramps]) {
     const lane: Strip = { ...stand, heading: (stand.heading * 180) / Math.PI, length: 1, width: 1 }
     paint.push(mark(lane, y, -45, 0, 150, 0.5))
@@ -143,9 +200,7 @@ function RunwayNumbers({ runway, y }: { runway: Strip; y: number }) {
           map={textures[end]}
           transparent
           depthWrite={false}
-          polygonOffset
-          polygonOffsetFactor={-8}
-          polygonOffsetUnits={-32}
+          {...depthBias(LAYER.numbers)}
         />
       </mesh>
     )
@@ -328,7 +383,9 @@ function JetBridge({ stand, base, terminal }: { stand: Stand; base: number; term
   )
 }
 
-const OFFSET = { polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -16 }
+// Each flat layer is drawn this share of its distance nearer than the one below, so taxiways
+// sit on the ground, runways on taxiways, and paint on runways, without flickering
+const LAYER = { aprons: 0.0005, runways: 0.001, paint: 0.0015, numbers: 0.002 }
 
 /** Runways, taxiways, aprons, paint, and buildings for every airport on the map. */
 export function Airports() {
@@ -336,6 +393,8 @@ export function Airports() {
   const wet = useGame(state => state.weather === 'rain')
   const surfaces = useMemo(() => {
     const runways: Patch[] = []
+    const taxiLines: Patch[] = []
+    const edgeLines: Patch[] = []
     const aprons: Patch[] = []
     const white: Patch[] = []
     const yellow: Patch[] = []
@@ -343,14 +402,17 @@ export function Airports() {
       const y = airport.elevation
       for (const strip of [...airport.taxiways, ...airport.aprons])
         aprons.push({ ...strip, y: y + 0.07 })
+      for (const strip of airport.taxiways) taxiLines.push({ ...strip, y: y + 0.12 })
       for (const runway of airport.runways) {
         runways.push({ ...runway, y: y + 0.1 })
+        edgeLines.push({ ...runway, y: y + 0.13 })
         white.push(...runwayPaint(runway, y + 0.13))
       }
       yellow.push(...taxiPaint(airport, y + 0.12))
     }
     return {
       runways: patchGeometry(runways),
+      lines: [...lineOverlays(edgeLines, runwayEdges), ...lineOverlays(taxiLines, taxiCentreline)],
       aprons: patchGeometry(aprons),
       white: patchGeometry(white),
       yellow: patchGeometry(yellow)
@@ -362,22 +424,32 @@ export function Airports() {
         <meshStandardMaterial
           color={wet ? '#3f4245' : '#565a5e'}
           roughness={wet ? 0.55 : 0.95}
-          {...OFFSET}
+          {...depthBias(LAYER.aprons)}
         />
       </mesh>
       <mesh geometry={surfaces.runways} receiveShadow>
         <meshStandardMaterial
           color={wet ? '#26282b' : '#35383c'}
           roughness={wet ? 0.5 : 0.95}
-          {...OFFSET}
-          polygonOffsetFactor={-5}
+          {...depthBias(LAYER.runways)}
         />
       </mesh>
+      {/* See-through and never hiding anything, so crossing lines simply overlap */}
+      {surfaces.lines.map(group => (
+        <mesh key={group.texture.uuid} geometry={group.geometry}>
+          <meshLambertMaterial
+            map={group.texture}
+            transparent
+            depthWrite={false}
+            {...depthBias(LAYER.paint)}
+          />
+        </mesh>
+      ))}
       <mesh geometry={surfaces.yellow}>
-        <meshLambertMaterial color="#e3b321" {...OFFSET} polygonOffsetFactor={-7} />
+        <meshLambertMaterial color={YELLOW_PAINT} {...depthBias(LAYER.paint)} />
       </mesh>
       <mesh geometry={surfaces.white}>
-        <meshLambertMaterial color="#e2dfd5" {...OFFSET} polygonOffsetFactor={-7} />
+        <meshLambertMaterial color={WHITE_PAINT} {...depthBias(LAYER.paint)} />
       </mesh>
       {AIRPORTS.map(airport => (
         <group key={airport.name}>

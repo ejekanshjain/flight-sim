@@ -41,13 +41,21 @@ import {
 } from './atmosphere'
 import { billboardMaterial, makeBillboards } from './billboards'
 import { environment } from './environment'
+import {
+  LOG_DEPTH_FRAGMENT,
+  LOG_DEPTH_FRAGMENT_PARS,
+  LOG_DEPTH_VERTEX,
+  LOG_DEPTH_VERTEX_PARS
+} from './logDepth'
 import { depthTexture, detailTexture, MAX_DEPTH } from './textures'
 
 const SKY_VERTEX = /* glsl */ `
   varying vec3 vDirection;
+  ${LOG_DEPTH_VERTEX_PARS}
   void main() {
     vDirection = position;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    ${LOG_DEPTH_VERTEX}
   }
 `
 const SKY_FRAGMENT = /* glsl */ `
@@ -64,7 +72,9 @@ const SKY_FRAGMENT = /* glsl */ `
   float hash(vec3 p) {
     return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
   }
+  ${LOG_DEPTH_FRAGMENT_PARS}
   void main() {
+    ${LOG_DEPTH_FRAGMENT}
     vec3 direction = normalize(vDirection);
     vec3 color = skyColor(direction);
     float sun = max(dot(direction, sunDirection), 0.0);
@@ -309,10 +319,12 @@ export function Terrain() {
 
 const SEA_VERTEX = /* glsl */ `
   varying vec3 vWorld;
+  ${LOG_DEPTH_VERTEX_PARS}
   void main() {
     vec4 world = modelMatrix * vec4(position, 1.0);
     vWorld = world.xyz;
     gl_Position = projectionMatrix * viewMatrix * world;
+    ${LOG_DEPTH_VERTEX}
   }
 `
 const SEA_FRAGMENT = /* glsl */ `
@@ -331,7 +343,9 @@ const SEA_FRAGMENT = /* glsl */ `
   varying vec3 vWorld;
   ${SKY_GLSL}
   ${HAZE_GLSL}
+  ${LOG_DEPTH_FRAGMENT_PARS}
   void main() {
+    ${LOG_DEPTH_FRAGMENT}
     vec3 toCamera = cameraPosition - vWorld;
     float distance = length(toCamera);
     vec3 view = toCamera / distance;

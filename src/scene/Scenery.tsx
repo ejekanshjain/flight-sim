@@ -47,6 +47,7 @@ import {
   type Tower
 } from '../world/scenery'
 import { lightLevel, nightUniform } from './atmosphere'
+import { depthBias } from './logDepth'
 
 const UP = new Vector3(0, 1, 0)
 const placer = new Object3D()
@@ -787,13 +788,7 @@ export function Cities() {
           receiveShadow
         >
           <planeGeometry args={[city.width, city.length]} />
-          <meshStandardMaterial
-            map={streets[i]}
-            roughness={0.95}
-            polygonOffset
-            polygonOffsetFactor={-4}
-            polygonOffsetUnits={-16}
-          />
+          <meshStandardMaterial map={streets[i]} roughness={0.95} {...depthBias(0.0005)} />
         </mesh>
       ))}
     </>
@@ -844,9 +839,7 @@ export function Roads() {
         color="#44474b"
         roughness={0.95}
         side={DoubleSide}
-        polygonOffset
-        polygonOffsetFactor={-6}
-        polygonOffsetUnits={-24}
+        {...depthBias(0.001)}
       />
     </mesh>
   )

@@ -18,9 +18,10 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 
 // Below this height the coach stops steering by the glide path and aims at the runway
 const SHORT_FINAL = 200 * FEET
-// Metres off the centreline that ask for the full turn back, per m/s of ground speed:
-// 9 m for a Cessna at 70 kt
-const FULL_TURN_SECONDS = 0.25
+// Metres off the centreline that ask for the full turn back, per m/s of ground speed. Light
+// aircraft swing across the line quickly, so the turn back eases in over 18 m at 70 kt;
+// jets turn slowly, and need to be firmly back on the line before the runway.
+const FULL_TURN_SECONDS = { piston: 0.5, jet: 0.25 }
 // Degrees of bank asked for per degree of track still to turn
 const BANK_GAIN = 2.5
 // Steepest turn back toward the centreline, and the bank to fly it
@@ -115,7 +116,7 @@ function configure(sim: FlightSim, pilot: Pilot, height: number): Advice | null 
     }
     return slow(spec.gearSpeed, 'gear')
   }
-  const notches = spec.flapLabels.length - 1
+  const notches = spec.autoFlaps ? 0 : spec.flapLabels.length - 1
   if (controls.flapNotch >= notches) return null
   // The limit for the next flap setting
   const limit = spec.flapSpeeds[controls.flapNotch]
@@ -203,7 +204,7 @@ function steer(sim: FlightSim, nav: Navigator, approach: Approach, height: numbe
   const track = Math.atan2(sim.velocity.x, -sim.velocity.z)
   const trackOff = turnTo(course, track)
   const reach = MAX_CORRECTION * clamp(height / SHORT_FINAL, 0.3, 1)
-  const offset = Math.max(9, sim.groundSpeed * FULL_TURN_SECONDS)
+  const offset = Math.max(9, sim.groundSpeed * FULL_TURN_SECONDS[sim.spec.engine.type])
   const wanted = clamp(-nav.guidance.across / offset, -1, 1) * reach
   const bankWanted = clamp(turnTo(trackOff, wanted) * BANK_GAIN, -CORRECTION_BANK, CORRECTION_BANK)
   const bankError = bankWanted - sim.bank
@@ -262,7 +263,7 @@ function descend(
     if (low) return { text: `${where}: tap [↓] to descend a little slower.`, tone: 'fix' }
     if (pilot.autothrottle.on) return null
     // Power for this descent at the approach speed, plus more when slow and less when fast
-    const speedError = clamp((spec.approachSpeed + 5 - knots) / 10, -1, 1)
+    const speedError = clamp((spec.approachSpeed - knots) / 6, -1, 1)
     const target = clamp(sim.throttleFor(approach.glide) + speedError * 0.15, 0, 1)
     const what = speedError > 0.5 ? 'Slow' : speedError < -0.5 ? 'Fast' : 'Power'
     return power(target, pilot.controls.throttle, what)
@@ -275,17 +276,21 @@ function descend(
   if (knots < reference - 4 && extraSink < -200) {
     return { text: 'Climbing and slowing: tap [↑] to lower the nose a little.', tone: 'fix' }
   }
-  // A steady speed error means the trim holds the wrong speed
-  if (Math.abs(extraSink) < 200 && Math.abs(knots - reference) > 6) {
-    const fast = knots > reference
+  // A steady speed error means the trim holds the wrong speed. Close to the ground a trim
+  // change would upset the descent, so the coach leaves it alone there.
+  const settled = Math.abs(extraSink) < 200 && height > 500 * FEET
+  if (settled && Math.abs(knots - spec.approachSpeed) > 8) {
+    const fast = knots > spec.approachSpeed
     const text = fast
       ? 'Fast: tap [E] to trim the nose up.'
       : 'Slow: tap [Q] to trim the nose down.'
     return { text, tone: 'fix' }
   }
   if (pilot.autothrottle.on) return null
-  // Steeper when high, shallower when low, and shallower again while sinking too fast
-  const correction = clamp(above / (2 * window) - extraSink / 800, -1, 1)
+  // Steeper when high, shallower when low, and shallower again while sinking too fast.
+  // On short final the power stays put unless the aircraft sinks faster than the path.
+  const path = height < SHORT_FINAL ? 0 : above / (2 * window)
+  const correction = clamp(path - extraSink / 800, -1, 1)
   const glide = approach.glide + correction * PATH_CORRECTION
   const why = extraSink > 400 ? 'Sinking fast' : where
   return power(sim.throttleFor(glide), pilot.controls.throttle, why)

@@ -15,7 +15,7 @@ import {
 } from 'three'
 import { game, useGame } from '../game/game'
 import { PART_NAMES, type PartName } from '../game/wreck'
-import type { AircraftSpec, AirlinerShape, Shape } from '../sim/aircraft'
+import type { AircraftSpec, AirlinerShape, BomberShape, Shape } from '../sim/aircraft'
 import { useDisposal } from './dispose'
 
 const QUARTER_TURN = Math.PI / 2
@@ -167,6 +167,7 @@ export function Aircraft() {
           <AirlinerModel key={spec.id} spec={spec} shape={shape} />
         ))}
       {shape.type === 'fighter' && <FighterModel key={spec.id} spec={spec} shape={shape} />}
+      {shape.type === 'bomber' && <BomberModel key={spec.id} spec={spec} shape={shape} />}
       {shape.type === 'propeller' && <PropellerModel key={spec.id} spec={spec} shape={shape} />}
       <Cockpit spec={spec} />
     </>
@@ -1685,6 +1686,319 @@ function ConcordeModel({ spec, shape }: { spec: AircraftSpec; shape: AirlinerSha
   )
 }
 
+/** Spanwise stations of the flying wing: distance out, and the skin's height above and below. */
+const BOMBER_STATIONS: [x: number, top: number, bottom: number][] = [
+  [0, 1.5, 1.3],
+  [2.5, 1.4, 1.2],
+  [4.25, 1.1, 1],
+  [8.5, 0.55, 0.45],
+  [13.5, 0.35, 0.3],
+  [20, 0.22, 0.18],
+  [26.2, 0.04, 0.04]
+]
+// Stations inboard of this belong to the centre body, which breaks away from the wings
+const BOMBER_BODY = 8.5
+// Elevons and, outboard, the split drag rudders along the straight outer trailing edge
+const BOMBER_SURFACES: [from: number, to: number][] = [
+  [13.8, 19.8],
+  [20.2, 25.6]
+]
+const BOMBER_SURFACE_CHORD = 1.6
+
+/** Leading and trailing edge of the bomber's outline at `x` metres out, as z positions. */
+function bomberEdges(outline: [number, number][], x: number) {
+  const [nose, tip] = outline
+  const lead = nose[1] + ((tip[1] - nose[1]) * x) / tip[0]
+  // The trailing edge runs from the wingtip back to the centre, so search it in that order
+  const trailing = outline.slice(2)
+  let trail = trailing[trailing.length - 1][1]
+  for (let i = 0; i < trailing.length - 1; i++) {
+    const [x1, z1] = trailing[i]
+    const [x2, z2] = trailing[i + 1]
+    if (x <= x1 && x >= x2) {
+      trail = z1 + ((z2 - z1) * (x1 - x)) / (x1 - x2 || 1)
+      break
+    }
+  }
+  return { lead, trail }
+}
+
+/**
+ * One side of the flying wing between two distances out, from the outline and the
+ * stations' thickness: deepest a third of the way back, thin at both edges.
+ */
+function flyingWingGeometry(shape: BomberShape, from: number, to: number, side: 1 | -1) {
+  const positions: number[] = []
+  const quad = (a: number[], b: number[], c: number[], d: number[]) => {
+    const order = side === 1 ? [a, b, c, a, c, d] : [a, c, b, a, d, c]
+    for (const point of order) positions.push(point[0] * side, point[1], point[2])
+  }
+  const stations = BOMBER_STATIONS.filter(([x]) => x >= from && x <= to)
+  for (let i = 0; i < stations.length - 1; i++) {
+    const [x1, top1, bottom1] = stations[i]
+    const [x2, top2, bottom2] = stations[i + 1]
+    const one = bomberEdges(shape.outline, x1)
+    const two = bomberEdges(shape.outline, x2)
+    const mid1 = one.lead + (one.trail - one.lead) * 0.33
+    const mid2 = two.lead + (two.trail - two.lead) * 0.33
+    for (const [y1, y2, up] of [
+      [top1, top2, true],
+      [-bottom1, -bottom2, false]
+    ] as const) {
+      const front = [
+        [x1, 0, one.lead],
+        [x1, y1, mid1],
+        [x2, y2, mid2],
+        [x2, 0, two.lead]
+      ]
+      const back = [
+        [x1, y1, mid1],
+        [x1, 0, one.trail],
+        [x2, 0, two.trail],
+        [x2, y2, mid2]
+      ]
+      for (const panel of [front, back]) {
+        if (up) quad(panel[0], panel[1], panel[2], panel[3])
+        else quad(panel[0], panel[3], panel[2], panel[1])
+      }
+    }
+  }
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+/**
+ * B-2 Spirit: one flying wing with a sawtooth trailing edge, a cockpit hump, four engines
+ * buried in the wing with intakes and exhaust troughs on top, elevons, and split drag
+ * rudders at the tips that open together as an airbrake.
+ */
+function BomberModel({ spec, shape }: { spec: AircraftSpec; shape: BomberShape }) {
+  const airframe = useAirframe(spec, shape.paint, shape.accent)
+  const { paint } = airframe
+  const built = useMemo(() => {
+    const surface = (from: number, to: number) => {
+      const length = to - from
+      return plateGeometry(
+        [
+          [0, 0],
+          [length, 0],
+          [length, BOMBER_SURFACE_CHORD * 0.9],
+          [0, BOMBER_SURFACE_CHORD]
+        ],
+        0.12
+      )
+    }
+    return {
+      // Both sides of the wing are drawn from either face: mirrored panels flip their winding
+      skin: new MeshStandardMaterial({ roughness: 0.75, metalness: 0.05, side: DoubleSide }),
+      body: [
+        flyingWingGeometry(shape, 0, BOMBER_BODY, -1),
+        flyingWingGeometry(shape, 0, BOMBER_BODY, 1)
+      ],
+      wings: [
+        flyingWingGeometry(shape, BOMBER_BODY, 26.2, -1),
+        flyingWingGeometry(shape, BOMBER_BODY, 26.2, 1)
+      ],
+      surfaces: BOMBER_SURFACES.map(([from, to]) => surface(from, to))
+    }
+  }, [shape])
+  useDisposal(built)
+
+  const surfaces = useRef<(Group | null)[]>([])
+  const rudders = useRef<(Group | null)[]>([])
+  const gear = useRef<(Group | null)[]>([])
+  const beacon = useRef<Group>(null)
+  const strobes = useRef<(Group | null)[]>([])
+  const lamp = useRef<Group>(null)
+
+  useFrame(({ clock }) => {
+    const { sim, pilot, wreck } = game
+    const c = pilot.controls
+    built.skin.color.copy(paint.body.color)
+    const blink = clock.elapsedTime % 1.2
+    if (beacon.current) beacon.current.visible = !wreck.active && blink < 0.12
+    for (const strobe of strobes.current) {
+      if (strobe) strobe.visible = !wreck.active && (blink < 0.05 || (blink > 0.15 && blink < 0.2))
+    }
+    if (lamp.current) lamp.current.visible = pilot.landingLights && !wreck.active
+    // The elevons pitch and roll the aircraft together
+    surfaces.current.forEach((elevon, i) => {
+      if (!elevon) return
+      const right = i === 1
+      elevon.rotation.x =
+        -(c.pitch + c.trim * 0.3) * ELEVATOR_TRAVEL + c.roll * AILERON_TRAVEL * (right ? -1 : 1)
+    })
+    // Each drag rudder splits open, top up and bottom down, to yaw toward its side.
+    // Both open together as the airbrake.
+    rudders.current.forEach((half, i) => {
+      if (!half) return
+      const right = i >= 2
+      const yaw = Math.max(0, right ? c.yaw : -c.yaw)
+      const open = Math.min(1, yaw + sim.speedBrakePosition) * RUDDER_TRAVEL
+      half.rotation.x = i % 2 === 0 ? open : -open
+    })
+    const retract = (1 - sim.gearPosition) * QUARTER_TURN
+    gear.current.forEach((leg, i) => {
+      if (!leg) return
+      leg.visible = sim.gearPosition > 0.03
+      if (i === 0) leg.rotation.x = -retract
+      else leg.rotation.z = i === 1 ? -retract : retract
+    })
+  })
+
+  const [noseWheel, leftMain, rightMain] = spec.contactPoints.map(point => point.position)
+  /** A gear leg ending in `axles` pairs of wheels. */
+  const leg = (index: number, bottom: Vector3, axles: number, mountY: number, tyre: number) => {
+    const drop = bottom.y + tyre - mountY
+    return (
+      <group
+        key={index}
+        ref={group => {
+          gear.current[index] = group
+        }}
+        position={[bottom.x, mountY, bottom.z]}
+      >
+        <Strut from={[0, 0, 0]} to={[0, drop, 0]} radius={0.2} material={paint.dark} />
+        {wheelSpots(axles).map(([side, axle]) => (
+          <Wheel
+            key={`${axle} ${side}`}
+            position={[side * tyre * 0.8, drop, (axle - (axles - 1) / 2) * tyre * 2.4]}
+            radius={tyre}
+            material={paint.dark}
+          />
+        ))}
+      </group>
+    )
+  }
+  const trailing = (x: number) => bomberEdges(shape.outline, x).trail
+  const wingPart = (side: 0 | 1) => {
+    const sign = side === 1 ? 1 : -1
+    const tipX = shape.outline[1][0]
+    const tipZ = (shape.outline[1][1] + shape.outline[2][1]) / 2
+    return (
+      <>
+        <mesh castShadow material={built.skin} geometry={built.wings[side]} />
+        <group scale={[sign, 1, 1]}>
+          {BOMBER_SURFACES.map(([from, to], i) => {
+            const hingeZ = trailing(from) - BOMBER_SURFACE_CHORD
+            const sweep = -Math.atan2(trailing(to) - trailing(from), to - from)
+            const chordY = BOMBER_STATIONS[5][1] * 0.5
+            // The inner surface is an elevon; the outer one is a drag rudder in two halves
+            return i === 0 ? (
+              <group key={from} position={[from, 0, hingeZ]} rotation-y={sweep}>
+                <group
+                  ref={group => {
+                    surfaces.current[side] = group
+                  }}
+                >
+                  <mesh castShadow material={built.skin} geometry={built.surfaces[i]} />
+                </group>
+              </group>
+            ) : (
+              <group key={from} position={[from, 0, hingeZ]} rotation-y={sweep}>
+                {[0, 1].map(half => (
+                  <group
+                    key={half}
+                    ref={group => {
+                      rudders.current[side * 2 + half] = group
+                    }}
+                    position={[0, half === 0 ? chordY * 0.4 : -chordY * 0.4, 0]}
+                    scale={[1, 0.5, 1]}
+                  >
+                    <mesh castShadow material={built.skin} geometry={built.surfaces[i]} />
+                  </group>
+                ))}
+              </group>
+            )
+          })}
+        </group>
+        <mesh material={side === 1 ? paint.green : paint.red} position={[tipX * sign, 0.05, tipZ]}>
+          <sphereGeometry args={[0.16, 8, 6]} />
+        </mesh>
+        <group
+          ref={group => {
+            strobes.current[side] = group
+          }}
+          position={[tipX * sign, 0.05, tipZ + 0.6]}
+        >
+          <mesh>
+            <sphereGeometry args={[0.18, 8, 6]} />
+            <meshBasicMaterial color="#ffffff" toneMapped={false} />
+          </mesh>
+        </group>
+        {leg(side + 1, side === 1 ? rightMain : leftMain, 2, -0.9, 0.6)}
+      </>
+    )
+  }
+
+  return (
+    <group ref={airframe.root}>
+      <Part airframe={airframe} name="fuselage">
+        <mesh castShadow material={built.skin} geometry={built.body[0]} />
+        <mesh castShadow material={built.skin} geometry={built.body[1]} />
+        {/* Engine humps on top, with the intakes ahead and exhaust troughs behind */}
+        {shape.engines.length > 0 &&
+          [-1, 1].map(sign => {
+            const x = (shape.engines[0][0] + shape.engines[shape.engines.length - 1][0]) / 2
+            return (
+              <group key={sign} position={[x * sign, 0, 0]}>
+                <mesh
+                  castShadow
+                  material={built.skin}
+                  position={[0, 0.55, -0.8]}
+                  scale={[1.7, 0.42, 6]}
+                >
+                  <sphereGeometry args={[1, 18, 10]} />
+                </mesh>
+                <mesh material={paint.dark} position={[0, 0.9, -3.1]} rotation-x={-0.35}>
+                  <boxGeometry args={[2.4, 0.36, 0.5]} />
+                </mesh>
+                <mesh material={paint.dark} position={[0, 0.52, 3.6]} rotation-x={-0.12}>
+                  <boxGeometry args={[2.6, 0.06, 2.6]} />
+                </mesh>
+              </group>
+            )
+          })}
+        <group ref={beacon} position={[0, -1.35, 1]}>
+          <mesh material={paint.red}>
+            <sphereGeometry args={[0.2, 8, 6]} />
+          </mesh>
+        </group>
+      </Part>
+      <Part airframe={airframe} name="nose">
+        {/* Cockpit hump with its four windscreen panels */}
+        <mesh castShadow material={built.skin} position={[0, 0.95, -4.6]} scale={[2.2, 0.85, 5.6]}>
+          <sphereGeometry args={[1, 20, 12]} />
+        </mesh>
+        <mesh material={paint.glass} position={[0, 1.72, -6.6]} rotation-x={-0.42}>
+          <boxGeometry args={[2.3, 0.06, 1.1]} />
+        </mesh>
+        {leg(0, noseWheel, 1, -1.1, 0.5)}
+        <group ref={lamp} position={[0, -1.25, -6.6]}>
+          <mesh>
+            <sphereGeometry args={[0.22, 10, 8]} />
+            <meshBasicMaterial color="#fffbe6" toneMapped={false} />
+          </mesh>
+        </group>
+      </Part>
+      <Part airframe={airframe} name="leftWing">
+        {wingPart(0)}
+      </Part>
+      <Part airframe={airframe} name="rightWing">
+        {wingPart(1)}
+      </Part>
+      <Part airframe={airframe} name="tail">
+        {/* The beaver tail between the exhausts, which also trims the pitch */}
+        <mesh material={paint.dark} position={[0, 0.2, trailing(0) - 2.2]}>
+          <boxGeometry args={[2.2, 0.1, 2.2]} />
+        </mesh>
+      </Part>
+    </group>
+  )
+}
+
 const TRIM = new MeshStandardMaterial({ color: '#14171a', roughness: 0.9 })
 
 /**
@@ -1727,7 +2041,7 @@ function Cockpit({ spec }: { spec: AircraftSpec }) {
             ))}
           </>
         )}
-        {kind === 'airliner' && (
+        {(kind === 'airliner' || kind === 'bomber') && (
           <>
             {/* Centre post between the two windscreens, side post, and the roof */}
             <mesh material={TRIM} position={[-eye.x, 0.12, -1.05]} rotation-x={0.5}>

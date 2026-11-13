@@ -133,3 +133,30 @@ test('a pilot who only follows the coach passes the landing tutorial', () => {
   expect(sim.crash).toBeNull()
   expect(result).toMatchObject({ passed: true })
 })
+
+test('passengers forgive a brief steep bank but not a long one', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'morning-shuttle')
+  const spec = HANGAR.find(candidate => candidate.id === 'a320')
+  if (!mission || !spec) throw new Error('Missing mission')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  sim.placeInAir(0, 1500, 0, 0, 120)
+  const pilot = new Pilot()
+  const nav = new Navigator()
+  const runner = new MissionRunner()
+  runner.start(mission, sim)
+  const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null }
+  const fly = (seconds: number, bank: number) => {
+    sim.bank = bank
+    let result = null
+    for (let time = 0; time < seconds && !result; time += STEP)
+      result = runner.update(STEP, context)
+    return result
+  }
+  // A second and a half at 50° only warns, and the warning clears once level again
+  expect(fly(1.5, 0.87)).toBeNull()
+  expect(runner.warning?.text).toContain('Roll level')
+  expect(fly(3, 0)).toBeNull()
+  expect(runner.warning).toBeNull()
+  // Four seconds at 50° frightens them
+  expect(fly(5, 0.87)).toMatchObject({ passed: false })
+})

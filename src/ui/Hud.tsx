@@ -103,7 +103,7 @@ const LAMPS: Lamp[] = [
   {
     label: 'OVERSPEED',
     kind: 'warning',
-    on: sim => sim.indicatedAirspeed > sim.spec.neverExceedSpeed
+    on: sim => sim.indicatedAirspeed > sim.speedLimit
   },
   { label: 'FLAP SPEED', kind: 'warning', on: sim => sim.flapOverspeed },
   { label: 'GEAR SPEED', kind: 'warning', on: sim => sim.gearOverspeed },
@@ -516,10 +516,11 @@ function switches(sim: FlightSim, controls: Controls) {
 /** Takeoff steps before the first flight, landing steps when low and slowing down or back on the ground. */
 function Checklists({ spec }: { spec: AircraftSpec }) {
   const { takeoff, landing } = useMemo(() => {
-    const airliner = spec.panel === 'glass'
+    const airliner = spec.shape.type === 'airliner'
     // Concorde's lever droops the nose instead of lowering flaps
     const nose = spec.flapName === 'Nose'
-    const flaps = spec.flapLabels.length - 1
+    // Flaps the pilot sets: none on fighters, whose flaps follow the gear
+    const flaps = spec.autoFlaps ? 0 : spec.flapLabels.length - 1
     const takeoffSteps: (Step | false)[] = [
       {
         text: (
@@ -547,22 +548,23 @@ function Checklists({ spec }: { spec: AircraftSpec }) {
         ),
         done: sim => sim.enginesRunning === spec.engineCount
       },
-      spec.panel !== 'dials' && {
-        text: (
-          <>
-            {nose ? (
-              <>
-                Press <Key>F</Key> once to lower the nose to {spec.flapLabels[1]} for takeoff.
-              </>
-            ) : (
-              <>
-                Press <Key>F</Key> twice for takeoff flaps.
-              </>
-            )}
-          </>
-        ),
-        done: (_, controls) => controls.flapNotch >= (nose ? 1 : 2)
-      },
+      spec.panel !== 'dials' &&
+        flaps > 0 && {
+          text: (
+            <>
+              {nose ? (
+                <>
+                  Press <Key>F</Key> once to lower the nose to {spec.flapLabels[1]} for takeoff.
+                </>
+              ) : (
+                <>
+                  Press <Key>F</Key> twice for takeoff flaps.
+                </>
+              )}
+            </>
+          ),
+          done: (_, controls) => controls.flapNotch >= (nose ? 1 : 2)
+        },
       {
         text: (
           <>
@@ -610,7 +612,7 @@ function Checklists({ spec }: { spec: AircraftSpec }) {
               </>
             )}
             .
-            {spec.panel !== 'dials' && (
+            {spec.panel !== 'dials' && flaps > 0 && (
               <>
                 {' '}
                 Press <Key>V</Key> to raise the {nose ? 'nose' : 'flaps'} before{' '}
@@ -657,7 +659,11 @@ function Checklists({ spec }: { spec: AircraftSpec }) {
                 Press <Key>G</Key> for gear down.{' '}
               </>
             )}
-            Press <Key>F</Key> until the {nose ? 'nose is fully down' : 'flaps are full'}.
+            {flaps > 0 && (
+              <>
+                Press <Key>F</Key> until the {nose ? 'nose is fully down' : 'flaps are full'}.
+              </>
+            )}
           </>
         ),
         done: (sim, controls) => sim.gearPosition > 0.99 && controls.flapNotch >= flaps
@@ -685,7 +691,11 @@ function Checklists({ spec }: { spec: AircraftSpec }) {
                 Hold <Key>Space</Key> to brake.
               </>
             )}{' '}
-            Press <Key>R</Key> and add throttle for reverse thrust.
+            {spec.reverseThrust > 0 && (
+              <>
+                Press <Key>R</Key> and add throttle for reverse thrust.
+              </>
+            )}
           </>
         ),
         done: sim => sim.onGround && sim.groundSpeed < 12
@@ -781,7 +791,8 @@ function Notices({ spec }: { spec: AircraftSpec }) {
           if (spec.speedBrakeDrag === 0) notice = 'This aircraft has no airbrake'
           else notice = now.airbrake ? 'Airbrake open' : 'Airbrake closed'
         } else if (now.reverse !== was.reverse) {
-          if (!now.reverse) notice = 'Reverse thrust off'
+          if (spec.reverseThrust === 0) notice = 'This aircraft has no thrust reversers'
+          else if (!now.reverse) notice = 'Reverse thrust off'
           else
             notice = sim.onGround
               ? 'Reverse thrust on'

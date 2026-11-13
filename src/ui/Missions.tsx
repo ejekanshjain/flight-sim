@@ -192,6 +192,8 @@ const clock = (seconds: number) =>
 export function MissionCard({ mission }: { mission: Mission }) {
   const items = useRef<(HTMLLIElement | null)[]>([])
   const timer = useRef<HTMLSpanElement>(null)
+  const [alert, setAlert] = useState<{ text: string; left: number } | null>(null)
+  const shown = useRef('')
   useTelemetry(
     useCallback(() => {
       const { step, time, gates } = game.missions
@@ -209,6 +211,13 @@ export function MissionCard({ mission }: { mission: Mission }) {
       ]
       setText(timer.current, parts.filter(Boolean).join(' · '))
       if (timer.current) timer.current.dataset.on = String(Boolean(limit && limit - time < 30))
+      // Only redraw the warning when its words or whole seconds change
+      const { warning } = game.missions
+      const next = warning ? `${warning.text} ${Math.ceil(warning.left)} s` : ''
+      if (next !== shown.current) {
+        shown.current = next
+        setAlert(warning && { text: warning.text, left: Math.ceil(warning.left) })
+      }
     }, [mission])
   )
   return (
@@ -230,6 +239,15 @@ export function MissionCard({ mission }: { mission: Mission }) {
           </li>
         ))}
       </ol>
+      {alert && (
+        <p
+          role="alert"
+          className="border-warn bg-warn/10 mt-2 rounded-sm border-l-4 px-2 py-1 leading-snug font-bold"
+        >
+          <KeyText text={alert.text} />{' '}
+          <span className="text-warn tabular-nums">Mission fails in {alert.left} s</span>
+        </p>
+      )}
     </div>
   )
 }

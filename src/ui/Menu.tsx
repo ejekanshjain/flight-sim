@@ -73,7 +73,7 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
       [[',', '.'], 'Left or right brake, to turn tightly on the ground'],
       [['P'], 'Parking brake'],
       [['L'], 'Landing lights'],
-      [['-'], 'Dump fuel to land lighter: 787, A380, and Concorde']
+      [['-'], 'Dump fuel to land lighter: 787, A380, Concorde, and F-35A']
     ]
   },
   {
@@ -226,6 +226,17 @@ function Silhouette({ spec }: { spec: AircraftSpec }) {
         ])
       )
     )
+  } else if (shape.type === 'bomber') {
+    // One flying wing: the right half's outline, then the left half's mirrored back to the nose
+    nose = shape.outline[0][1]
+    tail = Math.max(...shape.outline.map(([, z]) => z))
+    parts.push([
+      ...shape.outline,
+      ...shape.outline
+        .slice(1, -1)
+        .map(([x, z]): [number, number] => [-x, z])
+        .reverse()
+    ])
   } else if (shape.type === 'fighter') {
     const wide = shape.variant === 'f35' ? 1.6 : 1.1
     parts.push(
@@ -308,7 +319,7 @@ function AircraftPicker({ selected }: { selected: AircraftSpec }) {
   return (
     <fieldset className="mt-5">
       <legend className="sr-only">Aircraft</legend>
-      <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-8">
+      <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-9">
         {HANGAR.map(spec => (
           <button
             key={spec.id}
@@ -352,7 +363,7 @@ export function Menu() {
   let summary = CRASH_REASONS[crash ?? 'terrain']
   if (status === 'menu') {
     summary =
-      'Eight real aircraft, nine islands, twelve airports, and other traffic. Fly free, or take on a mission.'
+      'Nine real aircraft, nine islands, twelve airports, and other traffic. Fly free, or take on a mission.'
   } else if (status === 'paused') {
     summary = 'The aircraft holds its position until you resume.'
   } else if (status === 'finished' && result) {
@@ -479,7 +490,9 @@ export function Menu() {
                         </Action>
                       )}
                       <Action primary={choosing} onClick={game.startAtStand}>
-                        {selected.panel === 'glass' ? 'Start at the Gate' : 'Start at the Hangar'}
+                        {selected.shape.type === 'airliner'
+                          ? 'Start at the Gate'
+                          : 'Start at the Hangar'}
                       </Action>
                       <div className="grid grid-cols-2 gap-2">
                         <Action onClick={game.startOnRunway}>On the Runway</Action>

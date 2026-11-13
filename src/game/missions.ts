@@ -32,6 +32,18 @@ export type MissionContext = {
   parkedAt: Airport | null
 }
 
+/**
+ * A way to fail a mission. With `grace`, the mission fails only once the condition has held
+ * that many seconds in total, and the time counts back down while it does not hold. Until
+ * then `warning` says what to fix; it marks keys in square brackets.
+ */
+export type Failure = {
+  reason: string | ((context: MissionContext) => string)
+  failed: (context: MissionContext) => boolean
+  grace?: number
+  warning?: (context: MissionContext) => string
+}
+
 /** One step. Text marks keys in square brackets, such as [W]. */
 export type Objective = {
   text: string
@@ -76,10 +88,7 @@ export type Mission = {
   timeLimit?: number
   objectives: Objective[]
   /** Ways to fail. The reason can read the context, to quote a figure such as the sink rate. */
-  failures?: {
-    reason: string | ((context: MissionContext) => string)
-    failed: (context: MissionContext) => boolean
-  }[]
+  failures?: Failure[]
   /** Runs every frame, for scripted events such as an engine failure. */
   script?: (context: MissionContext) => void
 }
@@ -180,14 +189,27 @@ const offRunway = {
   failed: (context: MissionContext) => context.touchdown !== null && !context.touchdown.paved
 }
 
-/** Passengers notice steep banks and hard pulls. */
-const comfort = {
-  reason: 'The passengers were frightened: keep the bank under 35° and the pull gentle.',
-  failed: (context: MissionContext) =>
+const steepBank = (context: MissionContext) => Math.abs(context.sim.bank) > 40 * DEGREES
+
+/**
+ * Passengers notice steep banks and hard pulls. A moment of either only worries them; it
+ * takes 4 seconds of it before they are frightened.
+ */
+const comfort: Failure = {
+  reason:
+    'The passengers were frightened by steep banks or hard pulls. Keep the bank under 35° and the pull gentle.',
+  failed: context =>
     !context.sim.onGround &&
-    (Math.abs(context.sim.bank) > 40 * DEGREES ||
-      context.sim.gLoad > 1.8 ||
-      context.sim.gLoad < 0.3)
+    (steepBank(context) || context.sim.gLoad > 1.8 || context.sim.gLoad < 0.3),
+  grace: 4,
+  warning: context => {
+    if (steepBank(context)) {
+      return `Passengers uneasy: bank under 35°. Roll level with [${context.sim.bank > 0 ? '←' : '→'}].`
+    }
+    return context.sim.gLoad > 1.8
+      ? 'Passengers uneasy: pull more gently. Ease off [↓].'
+      : 'Passengers uneasy: push more gently. Ease off [↑].'
+  }
 }
 
 const startup = (engines: number): Objective[] => [
@@ -269,7 +291,9 @@ export const MISSIONS: Mission[] = [
     failures: [
       {
         reason: 'The aircraft got too close to the water. Keep above 300 ft.',
-        failed: c => c.sim.altitudeAgl < 90
+        failed: c => c.sim.altitudeAgl < 90,
+        grace: 3,
+        warning: () => 'Too low: climb back above 300 ft. Hold [↓].'
       }
     ]
   },
@@ -628,9 +652,9 @@ export const MISSIONS: Mission[] = [
         text: 'Climb at full throttle. Keep the speed below the red-and-black band on the speed scale.',
         done: c => c.sim.position.y > 20_000 * FEET
       },
-      { text: 'Break the sound barrier: pass Mach 1.', done: c => c.sim.trueAirspeed > 340 },
+      { text: 'Break the sound barrier: pass Mach 1.', done: c => c.sim.mach > 1 },
       { text: 'Climb above 50,000 ft.', done: c => c.sim.position.y > 50_000 * FEET },
-      { text: 'Accelerate past Mach 1.7.', done: c => c.sim.trueAirspeed > 340 * 1.7 }
+      { text: 'Accelerate past Mach 1.7.', done: c => c.sim.mach > 1.7 }
     ]
   }
 ]
@@ -662,7 +686,11 @@ export class MissionRunner {
   step = 0
   time = 0
   gates = 0
+  /** What to fix before a failure with a grace period runs out, and the seconds left. */
+  warning: { text: string; left: number } | null = null
   private held = 0
+  /** Seconds each failure's condition has held, net of the time it has not. */
+  private strain: number[] = []
   private touchdown: MissionContext['touchdown'] = null
   private wasOnGround = true
   private lastSink = 0
@@ -673,6 +701,8 @@ export class MissionRunner {
     this.time = 0
     this.gates = 0
     this.held = 0
+    this.strain = mission.failures?.map(() => 0) ?? []
+    this.warning = null
     this.touchdown = null
     this.wasOnGround = sim.onGround || sim.altitudeAgl < 3
     this.lastSink = 0
@@ -718,10 +748,19 @@ export class MissionRunner {
       touchdown: this.touchdown
     }
     mission.script?.(full)
-    for (const failure of mission.failures ?? []) {
-      if (failure.failed(full)) {
+    this.warning = null
+    const failures = mission.failures ?? []
+    for (let i = 0; i < failures.length; i++) {
+      const failure = failures[i]
+      const failing = failure.failed(full)
+      const grace = failure.grace ?? 0
+      this.strain[i] = failing ? this.strain[i] + dt : Math.max(0, this.strain[i] - dt)
+      if (failing && this.strain[i] >= grace) {
         const { reason } = failure
         return { passed: false, reason: typeof reason === 'string' ? reason : reason(full) }
+      }
+      if (failing && failure.warning && !this.warning) {
+        this.warning = { text: failure.warning(full), left: grace - this.strain[i] }
       }
     }
     if (mission.timeLimit && this.time > mission.timeLimit) {

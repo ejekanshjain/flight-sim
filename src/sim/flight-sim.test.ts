@@ -11,7 +11,8 @@ const find = (id: string) => HANGAR.find(spec => spec.id === id) as AircraftSpec
 const CESSNA = find('c172')
 const A320 = find('a320')
 const F16 = find('f16')
-const airliner = (spec: AircraftSpec) => spec.shape.type === 'airliner'
+/** Big jets with airliner instruments: the airliners and the bomber. */
+const airliner = (spec: AircraftSpec) => spec.panel === 'glass'
 
 function controls(overrides: Partial<Controls> = {}): Controls {
   return {
@@ -293,7 +294,7 @@ test('Concorde climbs on full reheat and passes Mach 1.6 within six minutes', ()
     const fast = clamp((sim.indicatedAirspeed / KNOT - 420) * 0.02)
     const climb = sim.position.y < 16_500 ? 0.08 + fast * 0.3 : (17_000 - sim.position.y) * 0.0002
     holdAttitude(sim, c, climb)
-    mach = Math.max(mach, sim.trueAirspeed / 340)
+    mach = Math.max(mach, sim.mach)
   })
   expect(sim.crash).toBeNull()
   expect(mach).toBeGreaterThan(1.6)
@@ -344,7 +345,8 @@ test.each([CESSNA, A320])('$name lands from a flared approach and stops', spec =
 })
 
 test('a hard touchdown and a gear-up landing both end the flight', () => {
-  const hard = flying(CESSNA, 8, 35)
+  // Dropped flat from just above the runway, so the main wheels take the blow
+  const hard = flying(CESSNA, 3, 35)
   hard.velocity.y = -8
   run(hard, controls(), 5)
   expect(hard.crash).toBe('hard-landing')

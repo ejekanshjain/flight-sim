@@ -27,6 +27,9 @@ export function Scene() {
       shadows={detailed}
       dpr={detailed ? [1, 2] : 1}
       camera={{ fov: 58, near: 1, far: 60_000 }}
+      // Depth precision spread evenly from 1 m to 60 km, so the sea and gently sloping
+      // beaches far away stay apart instead of flickering through each other
+      gl={{ logarithmicDepthBuffer: true }}
     >
       <color attach="background" args={[HORIZON_COLOR]} />
       <fogExp2 attach="fog" args={[HORIZON_COLOR, FOG_DENSITY]} />

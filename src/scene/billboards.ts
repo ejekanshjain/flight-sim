@@ -7,6 +7,12 @@ import {
   Vector2
 } from 'three'
 import { cloudLight, fogUniform, HAZE_GLSL, horizon } from './atmosphere'
+import {
+  LOG_DEPTH_FRAGMENT,
+  LOG_DEPTH_FRAGMENT_PARS,
+  LOG_DEPTH_VERTEX,
+  LOG_DEPTH_VERTEX_PARS
+} from './logDepth'
 import { puffTexture } from './textures'
 
 const VERTEX = /* glsl */ `
@@ -19,6 +25,7 @@ const VERTEX = /* glsl */ `
   varying float vAlpha;
   varying float vGlow;
   varying float vDistance;
+  ${LOG_DEPTH_VERTEX_PARS}
   void main() {
     vec4 eye = viewMatrix * vec4(center, 1.0);
     float c = cos(info.y);
@@ -30,6 +37,7 @@ const VERTEX = /* glsl */ `
     vGlow = info.w;
     vDistance = -eye.z;
     gl_Position = projectionMatrix * eye;
+    ${LOG_DEPTH_VERTEX}
   }
 `
 
@@ -45,7 +53,9 @@ const FRAGMENT = /* glsl */ `
   varying float vGlow;
   varying float vDistance;
   ${HAZE_GLSL}
+  ${LOG_DEPTH_FRAGMENT_PARS}
   void main() {
+    ${LOG_DEPTH_FRAGMENT}
     float alpha = texture2D(map, vUv).a * vAlpha * smoothstep(nearFade.x, nearFade.y, vDistance);
     if (alpha < 0.004) discard;
     // Clouds and smoke take the colour of the daylight; fire and flashes make their own

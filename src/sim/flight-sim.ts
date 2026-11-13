@@ -6,7 +6,7 @@ import {
   KNOT,
   ROLLING_FRICTION,
   SEA_LEVEL_DENSITY,
-  SPEED_OF_SOUND
+  speedOfSound
 } from './aircraft'
 
 export type Surface = 'runway' | 'grass' | 'water'
@@ -93,6 +93,8 @@ export const DUMP_FLOOR = 0.2
 const DUMP_SECONDS = 300
 // How much harder than the main wheels the nose wheel can meet the runway
 const NOSE_WHEEL_MARGIN = 1.5
+// How much more fuel a jet burns per newton of thrust at Mach 1 than standing still
+const TSFC_RISE = 0.6
 // Brake pressure the autobrake applies on the landing roll, gentle enough to keep the nose up
 const AUTOBRAKE = 0.5
 // Wheel height in metres, 50 ft, below which fly-by-wire hands the flare to the pilot
@@ -101,6 +103,11 @@ const FLARE_LAW_HEIGHT = 15
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t
 const sigmoid = (x: number) => 1 / (1 + Math.exp(-x))
+/**
+ * Share of standing thrust a jet keeps at a Mach number. Turbofans lose thrust up to Mach 1.
+ * Engines whose lapse is negative gain from ram air in the intake, up to Mach 2.
+ */
+const speedFactor = (lapse: number, mach: number) => 1 - lapse * Math.min(lapse < 0 ? 2 : 1, mach)
 const smoothstep = (edge0: number, edge1: number, x: number) => {
   const t = clamp((x - edge0) / (edge1 - edge0), 0, 1)
   return t * t * (3 - 2 * t)
@@ -170,6 +177,8 @@ export class FlightSim {
   onGround = false
   indicatedAirspeed = 0
   trueAirspeed = 0
+  /** Mach number: true airspeed over the speed of sound at this altitude. */
+  mach = 0
   groundSpeed = 0
   verticalSpeed = 0
   altitudeAgl = 0
@@ -217,6 +226,18 @@ export class FlightSim {
   balancingRudder = 0
   /** True while fuel streams overboard. */
   dumping = false
+
+  /**
+   * Highest indicated airspeed in m/s allowed here: the never-exceed speed, or lower high up,
+   * where the Mach limit is reached first.
+   */
+  get speedLimit() {
+    const { neverExceedSpeed, maxMach } = this.spec
+    if (maxMach === undefined) return neverExceedSpeed
+    const { y } = this.position
+    const atMach = maxMach * speedOfSound(y) * Math.sqrt(airDensity(y) / SEA_LEVEL_DENSITY)
+    return Math.min(neverExceedSpeed, atMach)
+  }
 
   /** Kilograms: the aircraft with its current fuel. */
   get mass() {
@@ -346,7 +367,7 @@ export class FlightSim {
         Math.hypot(speed, engine.staticThrustSpeed)
       return clamp(thrust / full, 0, 1)
     }
-    const lapse = 1 - engine.speedLapse * Math.min(1, speed / SPEED_OF_SOUND)
+    const lapse = speedFactor(engine.speedLapse, speed / speedOfSound(this.position.y))
     const dry = thrust / (lapse * thin ** 0.7)
     const share = (dry - engine.idleThrust) / (engine.militaryThrust - engine.idleThrust)
     return clamp(share * engine.afterburnerFrom, 0, engine.afterburnerFrom)
@@ -361,6 +382,7 @@ export class FlightSim {
     this.altitudeAgl = y - Math.max(this.ground.heightAt(x, z), 0)
     this.trueAirspeed = this.velocity.length()
     this.indicatedAirspeed = this.trueAirspeed * Math.sqrt(airDensity(y) / SEA_LEVEL_DENSITY)
+    this.mach = this.trueAirspeed / speedOfSound(y)
   }
 
   /** Advances the simulation by `dt` seconds. `wind` is the air mass velocity in m/s. */
@@ -405,13 +427,14 @@ export class FlightSim {
     // Flying within one wingspan of the ground cuts induced drag
     const heightRatio = (16 * Math.max(agl, 0)) / A.wingSpan
     const groundEffect = (heightRatio * heightRatio) / (1 + heightRatio * heightRatio)
-    const mach = airspeed / SPEED_OF_SOUND
+    const mach = airspeed / speedOfSound(this.position.y)
+    this.mach = mach
     const cd =
       A.cd0 +
       this.gearPosition * A.gearDrag * (this.gearJammed ? 1.6 : 1) +
       flap * A.flapDrag +
       this.speedBrakePosition * A.speedBrakeDrag +
-      A.waveDrag * smoothstep(0.85, 1.1, mach) +
+      A.waveDrag * smoothstep(A.dragRiseMach ?? 0.85, 1.1, mach) +
       A.sideDrag * sinBeta * sinBeta +
       lerp(
         A.inducedDrag * clAttached * clAttached * groundEffect,
@@ -469,6 +492,10 @@ export class FlightSim {
       }
       // Alpha protection: the stick cannot pull the wing past its limit
       stick = Math.min(stick, (limit - alpha) * 10 - this.angularVelocity.x * 2)
+      const { maxPitch } = A.flyByWire
+      if (maxPitch !== undefined) {
+        stick = Math.min(stick, (maxPitch - this.pitch) * 5 - this.angularVelocity.x * 2)
+      }
       const overBank = Math.abs(this.bank) - A.flyByWire.maxBank
       if (overBank > 0) wheel = clamp(wheel - Math.sign(this.bank) * overBank * 5, -1, 1)
     }
@@ -584,7 +611,7 @@ export class FlightSim {
       (1 - this.reversePosition) *
       this.reheat(state.power, engine.afterburnerFrom) *
       (engine.afterburnerThrust - engine.militaryThrust)
-    const lapse = 1 - engine.speedLapse * Math.min(1, forwardSpeed / SPEED_OF_SOUND)
+    const lapse = speedFactor(engine.speedLapse, forwardSpeed / speedOfSound(this.position.y))
     return (dry + boost) * lapse * thin ** 0.7
   }
 
@@ -666,7 +693,8 @@ export class FlightSim {
     }
     const spoilers = controls.speedBrake || this.rollout ? 1 : 0
     this.speedBrakePosition = approach(this.speedBrakePosition, spoilers, dt)
-    const reverseTarget = controls.reverse ? 1 : 0
+    // Without reversers the lever does nothing
+    const reverseTarget = controls.reverse && A.reverseThrust > 0 ? 1 : 0
     this.reversePosition = approach(this.reversePosition, reverseTarget, dt)
 
     this.checkLimits(dt, controls)
@@ -682,6 +710,14 @@ export class FlightSim {
     let power = 0
     let running = 0
     let burn = 0
+    // Fuel flow follows the thrust the engines deliver: less in thin air, and for jets less
+    // as the intake slows down. Jets burn more per newton as the Mach number rises.
+    const thin = airDensity(this.position.y) / SEA_LEVEL_DENSITY
+    let fuelFlow = thin
+    if (A.engine.type === 'jet') {
+      const mach = Math.min(1, this.mach)
+      fuelFlow = thin ** 0.7 * speedFactor(A.engine.speedLapse, this.mach) * (1 + TSFC_RISE * mach)
+    }
     this.afterburner = false
     for (let i = 0; i < this.engines.length; i++) {
       const engine = this.engines[i]
@@ -704,7 +740,7 @@ export class FlightSim {
       power += engine.power
       if (!engine.running) continue
       running++
-      burn += lerp(A.fuelBurnIdle, A.fuelBurnFull, this.fuelDemand(engine.power))
+      burn += lerp(A.fuelBurnIdle, A.fuelBurnFull, this.fuelDemand(engine.power)) * fuelFlow
       if (A.engine.type === 'jet' && engine.power > A.engine.afterburnerFrom) {
         this.afterburner = this.reversePosition < 0.5
       }

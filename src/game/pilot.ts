@@ -30,6 +30,8 @@ const ALTITUDE_RATE = 60
 const SPEED_RATE = 8
 const VERTICAL_SPEED_RATE = 2.5
 const AUTOPILOT_BANK = 0.44
+// Fly-by-wire jets up to this mass in kg get the autopilot's full slow pitch correction
+const RESPONSE_MASS = 80_000
 // Yaw damper rudder per radian of slip, and per radian-second of slip it builds up
 const YAW_DAMPER = 2
 const YAW_TRIM = 1
@@ -41,6 +43,8 @@ const MINIMUMS = 15
 // seconds of descent the flare keeps left, the gentlest sink it asks for in m/s, the nose-down
 // rate in radians per second once down, and the ground speed in m/s where it hands back
 const FLARE_HEIGHT = 15
+// Seconds ahead the flare judges the descent
+const FLARE_AHEAD = 1
 const RETARD_HEIGHT = 6
 const FLARE_SECONDS = 4
 const FLARE_SINK = 0.4
@@ -54,8 +58,9 @@ const TAIL_MARGIN = 0.03
 const DEROTATE_RATE = -0.03
 const ROLLOUT_END = 15
 
-/** Airliners can land themselves; fighters and light aircraft hand over at 50 ft. */
-export const canAutoland = (sim: FlightSim) => sim.spec.shape.type === 'airliner'
+/** Airliners and the bomber land themselves; fighters and light aircraft hand over at 50 ft. */
+export const canAutoland = (sim: FlightSim) =>
+  sim.spec.shape.type === 'airliner' || sim.spec.shape.type === 'bomber'
 
 /** Height of the wheels above the runway, or above the ground on the way in over hills. */
 const wheelHeight = (sim: FlightSim, runway: Approach) =>
@@ -125,6 +130,8 @@ export class Pilot {
   private climbTrim = 0
   /** Stick the autoland flare has built up, or null outside the flare. */
   private flareStick: number | null = null
+  /** Climb rate at the last flare step, to see how fast the descent is easing. */
+  private flareSink: number | null = null
   /** Aileron the autopilot has built up against a steady roll. */
   private rollTrim = 0
   /** Rudder the yaw damper has built up against a steady slip. */
@@ -171,8 +178,11 @@ export class Pilot {
   press(code: string, repeat: boolean, sim: FlightSim, nav?: Navigator, shift = false) {
     const c = this.controls
     if (!repeat) {
-      if (code === 'KeyF') c.flapNotch = Math.min(sim.spec.flapLabels.length - 1, c.flapNotch + 1)
-      else if (code === 'KeyV') c.flapNotch = Math.max(0, c.flapNotch - 1)
+      // On fighters the flight computer sets the flaps, so the keys do nothing
+      const lever = !sim.spec.autoFlaps
+      if (code === 'KeyF' && lever) {
+        c.flapNotch = Math.min(sim.spec.flapLabels.length - 1, c.flapNotch + 1)
+      } else if (code === 'KeyV' && lever) c.flapNotch = Math.max(0, c.flapNotch - 1)
       else if (code === 'KeyG') c.gearDown = !c.gearDown || !sim.spec.retractableGear
       else if (code === 'KeyB') c.speedBrake = !c.speedBrake
       else if (code === 'KeyR') c.reverse = !c.reverse
@@ -365,6 +375,7 @@ export class Pilot {
     else c.throttle = clamp(c.throttle + lever * THROTTLE_RATE * dt, 0, 1)
     this.lastAirspeed = airspeed
 
+    if (spec.autoFlaps) c.flapNotch = c.gearDown ? spec.flapLabels.length - 1 : 0
     const pedals = this.axis('KeyD', 'KeyA')
     if (autopilot.on && pedals === 0 && sim.onGround) {
       // Rolling out after an autoland: the rudder steers along the runway
@@ -411,12 +422,14 @@ export class Pilot {
         this.rollOut(sim, nav.approach, nav)
         return
       }
-      if (wheels < FLARE_HEIGHT) {
+      // Once started, the flare carries on to the touchdown
+      if (this.flareStick !== null || wheels < FLARE_HEIGHT) {
         this.flare(dt, sim, nav.approach, wheels, rollReach)
         return
       }
     }
     this.flareStick = null
+    this.flareSink = null
     if (autopilot.lateral === 'APP' && nav?.approach) {
       const steer = this.steerApproach(sim, nav)
       track = groundTrack
@@ -500,9 +513,10 @@ export class Pilot {
     )
     const error = climb - sim.verticalSpeed
     // Ask for the extra g that closes the climb-rate error in about three seconds. A slow sum
-    // trims out what is left; fly-by-wire trims itself, and the sum would only swing it up
-    // and down
-    const trimRate = spec.flyByWire ? 0 : 0.015
+    // trims out what is left. Heavy fly-by-wire jets answer slowly and trim themselves, so
+    // for them the sum shrinks steeply with weight, or it swings them up and down.
+    const heavy = spec.flyByWire ? Math.min(1, RESPONSE_MASS / sim.mass) ** 4 : 1
+    const trimRate = 0.015 * heavy
     this.climbTrim = clamp(this.climbTrim + error * trimRate * dt, -0.5, 0.5)
     const extraG = error / (3 * 9.81) + this.climbTrim
     c.pitch = clamp(extraG / pitchPower - sim.angularVelocity.x * 0.8, -1, 1)
@@ -528,7 +542,10 @@ export class Pilot {
   private flare(dt: number, sim: FlightSim, runway: Approach, wheels: number, rollReach: number) {
     const c = this.controls
     const wanted = -Math.max(FLARE_SINK, wheels / FLARE_SECONDS)
-    const error = wanted - sim.verticalSpeed
+    // Judge the descent a moment ahead, so a nose still rising does not carry it into a balloon
+    const rising = this.flareSink === null ? 0 : (sim.verticalSpeed - this.flareSink) / dt
+    this.flareSink = sim.verticalSpeed
+    const error = wanted - (sim.verticalSpeed + rising * FLARE_AHEAD)
     // Start from the stick the approach left, then pull in proportion to the extra sink
     this.flareStick = clamp((this.flareStick ?? c.pitch) + error * FLARE_BUILD * dt, -0.3, 1)
     // Never so far nose-up that the tail or engine pods meet the runway

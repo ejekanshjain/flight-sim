@@ -1,5 +1,11 @@
 import { BufferAttribute, BufferGeometry, ShaderMaterial } from 'three'
 import { fogUniform, nightUniform } from './atmosphere'
+import {
+  LOG_DEPTH_FRAGMENT,
+  LOG_DEPTH_FRAGMENT_PARS,
+  LOG_DEPTH_VERTEX,
+  LOG_DEPTH_VERTEX_PARS
+} from './logDepth'
 
 /** Pixels per metre at 1 m from the camera. The scene updates it every frame. */
 export const pointScale = { value: 800 }
@@ -12,20 +18,27 @@ const VERTEX = /* glsl */ `
   uniform float fogDensity;
   varying vec3 vColor;
   varying float vFade;
+  ${LOG_DEPTH_VERTEX_PARS}
   void main() {
     vec4 eye = modelViewMatrix * vec4(position, 1.0);
     float distance = -eye.z;
     vColor = color;
     // Lights stay a few pixels wide far away, and glare bigger in the dark
     float glare = 1.0 + night * 0.9;
-    gl_PointSize = clamp(size * glare * scale / max(distance, 1.0), 3.0 + night, 14.0 + night * 10.0);
+    float natural = size * glare * scale / max(distance, 1.0);
+    gl_PointSize = clamp(natural, 3.0 + night, 14.0 + night * 10.0);
     // Lights shine through haze further than the ground they stand on
     float haze = exp(-fogDensity * fogDensity * distance * distance * 0.35);
     vFade = (1.0 - smoothstep(16000.0, 24000.0, distance)) * haze;
+    // By day a light smaller than its dot fades instead of being drawn oversized, so rows of
+    // distant lights do not sparkle as the view moves. At night they stay bright points.
+    float coverage = clamp(natural / gl_PointSize, 0.0, 1.0);
+    vFade *= mix(coverage * coverage, 1.0, night);
     #ifdef NIGHT_ONLY
       vFade *= night;
     #endif
     gl_Position = projectionMatrix * eye;
+    ${LOG_DEPTH_VERTEX}
   }
 `
 
@@ -33,7 +46,9 @@ const FRAGMENT = /* glsl */ `
   uniform float night;
   varying vec3 vColor;
   varying float vFade;
+  ${LOG_DEPTH_FRAGMENT_PARS}
   void main() {
+    ${LOG_DEPTH_FRAGMENT}
     float d = length(gl_PointCoord - 0.5);
     // A bright core, and at night a soft halo around it
     float core = smoothstep(0.5, 0.1, d);

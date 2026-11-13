@@ -2,7 +2,9 @@ import { Vector3 } from 'three'
 
 export const GRAVITY = 9.81
 export const SEA_LEVEL_DENSITY = 1.225
-export const SPEED_OF_SOUND = 340
+/** Speed of sound in m/s at an altitude in metres: it falls with the temperature up to 11 km. */
+export const speedOfSound = (altitude: number) =>
+  340.3 * Math.sqrt(Math.max(216.65, 288.15 - 0.0065 * altitude) / 288.15)
 export const KNOT = 0.5144
 
 /** Rolling resistance of a free wheel on each surface. */
@@ -123,7 +125,21 @@ export type Shape =
       accent: string
     }
   | { type: 'fighter'; variant: 'f16' | 'f35'; paint: string; accent: string }
+  | BomberShape
   | AirlinerShape
+
+/**
+ * A flying wing with no fuselage or tail. The outline runs from the nose to the right
+ * wingtip and back along the sawtooth trailing edge, as (x, z) pairs; the left half mirrors it.
+ */
+export type BomberShape = {
+  type: 'bomber'
+  outline: [number, number][]
+  /** Right-hand engines as [distance from centreline, z], buried in the wing. */
+  engines: [number, number][]
+  paint: string
+  accent: string
+}
 
 /**
  * Everything that makes one aircraft type fly, look, and read differently.
@@ -170,6 +186,8 @@ export type AircraftSpec = {
   inducedDrag: number
   sideDrag: number
   sideForce: number
+  /** Mach number where the extra drag of shock waves starts to build. 0.85 if not given. */
+  dragRiseMach?: number
   /** Extra drag near and above the speed of sound. */
   waveDrag: number
   speedBrakeDrag: number
@@ -230,9 +248,10 @@ export type AircraftSpec = {
   reverseThrust: number
   /**
    * Fly-by-wire: the computers trim for level flight, stop the wing short of the stall by
-   * `alphaMargin` radians, and stop the bank at `maxBank` radians.
+   * `alphaMargin` radians, and stop the bank at `maxBank` radians. With `maxPitch`, they
+   * also stop the nose above that many radians, so a long pull cannot loop the aircraft.
    */
-  flyByWire: { alphaMargin: number; maxBank: number } | null
+  flyByWire: { alphaMargin: number; maxBank: number; maxPitch?: number } | null
   /** Spoilers and brakes come on by themselves after touchdown. */
   autobrake: boolean
 
@@ -240,6 +259,10 @@ export type AircraftSpec = {
   maneuverSpeed: number
   /** Indicated airspeed in m/s the airframe must never exceed. It breaks up 12% above this. */
   neverExceedSpeed: number
+  /** Highest Mach number allowed, which limits jets high up. Warns only; nothing breaks. */
+  maxMach?: number
+  /** Fighters: the flight computer lowers the flaps with the gear, so there is no flap lever. */
+  autoFlaps?: boolean
   maxTouchdownSink: number
   gearTravel: number
   brakeFriction: number
@@ -326,14 +349,15 @@ const part = (x: number, y: number, z: number, radius: number) => ({
 
 const CESSNA: AircraftSpec = {
   id: 'c172',
-  name: 'Cessna 172 Skyhawk',
+  name: 'Cessna 172S Skyhawk',
   label: 'Cessna 172',
   role: 'Four-seat piston single',
   description:
     'The aircraft most pilots learn on. Slow and steady, with cables to the controls and nothing to save you from a stall.',
-  stats: { power: '160 hp', topSpeed: 111, stallSpeed: 50, climb: 760 },
+  stats: { power: '180 hp', topSpeed: 123, stallSpeed: 48, climb: 730 },
 
-  mass: 1100,
+  // With 30% fuel, so full tanks bring it to the 1,157 kg maximum takeoff weight
+  mass: 1030,
   inertiaPitch: 1825,
   inertiaYaw: 2667,
   inertiaRoll: 1285,
@@ -382,7 +406,7 @@ const CESSNA: AircraftSpec = {
 
   engine: {
     type: 'piston',
-    shaftPower: 120_000,
+    shaftPower: 134_000,
     propEfficiency: 0.8,
     staticThrustSpeed: 35,
     idlePower: 0.05,
@@ -411,7 +435,7 @@ const CESSNA: AircraftSpec = {
   flyByWire: null,
   autobrake: false,
 
-  maneuverSpeed: 50,
+  maneuverSpeed: 52.5,
   neverExceedSpeed: 163 * KNOT,
   maxTouchdownSink: 5,
   gearTravel: 0.45,
@@ -454,8 +478,8 @@ const CESSNA: AircraftSpec = {
       max: 180,
       labelEvery: 20,
       tickEvery: 10,
-      flapRange: [44, 85],
-      normalRange: [50, 129],
+      flapRange: [40, 85],
+      normalRange: [48, 129],
       cautionRange: [129, 163]
     },
     climb: 2000,
@@ -502,7 +526,16 @@ type AirlinerPlan = {
   chord: number
   inertia: [pitch: number, yaw: number, roll: number]
   flyByWire: boolean
+  /** Airbus fly-by-wire also stops the nose at 30° up. */
+  pitchLimit?: boolean
   fuelDump: boolean
+  /** Share of forward thrust in reverse. The A380 reverses only its inner engines. */
+  reverseThrust?: number
+  /** Extra lift coefficient at full flap. Big wings with simpler flaps get less. */
+  flapLift?: number
+  /** Maximum operating speed in knots, and Mach number. */
+  vmo: number
+  mmo: number
   flapLabels: string[]
   flapSpeeds: number[]
   gearSpeed: number
@@ -533,6 +566,8 @@ function airliner(plan: AirlinerPlan): AircraftSpec {
   const [mainSpring, mainDamper] = spring((weight * (1 - noseShare)) / 2, 0.22)
   const top = shape.radius * shape.tall
   const length = shape.tailZ - shape.noseZ
+  // Induced drag from the wing's aspect ratio, with a span efficiency of 0.75
+  const aspectRatio = (halfSpan * 2) ** 2 / plan.wingArea
   return {
     id: plan.id,
     name: plan.name,
@@ -541,7 +576,7 @@ function airliner(plan: AirlinerPlan): AircraftSpec {
     description: plan.description,
     stats: {
       power: plan.thrustLabel,
-      topSpeed: 350,
+      topSpeed: plan.vmo,
       stallSpeed: plan.stallSpeed,
       climb: plan.climb
     },
@@ -556,8 +591,9 @@ function airliner(plan: AirlinerPlan): AircraftSpec {
 
     cl0: 0.2,
     clAlpha: 5.2,
-    flapLift: 1.35,
-    stallAlpha: 0.25,
+    flapLift: plan.flapLift ?? 1.05,
+    // Flaps up the wing stalls near a lift coefficient of 1.45
+    stallAlpha: 0.3,
     negativeStallAlpha: 0.2,
     flapStallShift: -0.06,
     stallSharpness: 40,
@@ -567,10 +603,12 @@ function airliner(plan: AirlinerPlan): AircraftSpec {
     cd0: 0.019,
     gearDrag: 0.018,
     flapDrag: 0.075,
-    inducedDrag: 0.042,
+    inducedDrag: 1 / (Math.PI * aspectRatio * 0.75),
     sideDrag: 0.5,
     sideForce: -0.7,
-    waveDrag: 0.03,
+    // Drag climbs steeply just past the maximum operating Mach number
+    dragRiseMach: plan.mmo - 0.02,
+    waveDrag: 0.06,
     speedBrakeDrag: 0.05,
     liftDump: 0.45,
 
@@ -617,12 +655,15 @@ function airliner(plan: AirlinerPlan): AircraftSpec {
     flapSecondsPerNotch: 2.5,
     retractableGear: true,
     gearSeconds: 6,
-    reverseThrust: 0.4,
-    flyByWire: plan.flyByWire ? { alphaMargin: 0.07, maxBank: 1.15 } : null,
+    reverseThrust: plan.reverseThrust ?? 0.4,
+    flyByWire: plan.flyByWire
+      ? { alphaMargin: 0.07, maxBank: 1.15, maxPitch: plan.pitchLimit ? 0.52 : undefined }
+      : null,
     autobrake: true,
 
     maneuverSpeed: plan.stallSpeed * 1.48 * KNOT * 1.58,
-    neverExceedSpeed: 350 * KNOT,
+    neverExceedSpeed: plan.vmo * KNOT,
+    maxMach: plan.mmo,
     maxTouchdownSink: 5,
     gearTravel: 0.5,
     brakeFriction: 0.5,
@@ -711,13 +752,16 @@ const A320 = airliner({
   chord: 4.19,
   inertia: [3_800_000, 4_900_000, 1_280_000],
   flyByWire: true,
+  pitchLimit: true,
   flapLabels: ['0', '1', '2', '3', 'FULL'],
-  fuelCapacity: 15_000,
+  fuelCapacity: 19_000,
   fuelDump: false,
   gear: { y: 3.7, noseZ: -11.5, mainX: 3.8, mainZ: 1.1 },
   stallSpeed: 104,
   flapSpeeds: [230, 200, 185, 177],
   gearSpeed: 280,
+  vmo: 350,
+  mmo: 0.82,
   climb: 2500,
   shape: {
     type: 'airliner',
@@ -755,19 +799,21 @@ const B737 = airliner({
   description:
     'Cables and hydraulics, no computer between you and the wing. It will stall if you let it, and the engines sit close to the ground.',
   mass: 66_000,
-  thrust: 130_000,
-  thrustLabel: '2 × 29,000 lbf',
+  thrust: 127_600,
+  thrustLabel: '2 × 28,690 lbf',
   wingArea: 127,
   chord: 4.1,
   inertia: [4_100_000, 5_300_000, 1_350_000],
   flyByWire: false,
   flapLabels: ['Up', '5', '15', '30', '40'],
-  fuelCapacity: 16_000,
+  fuelCapacity: 20_700,
   fuelDump: false,
   gear: { y: 3.1, noseZ: -14.2, mainX: 2.86, mainZ: 1.2 },
   stallSpeed: 106,
   flapSpeeds: [250, 200, 175, 162],
   gearSpeed: 270,
+  vmo: 340,
+  mmo: 0.82,
   climb: 2500,
   shape: {
     type: 'airliner',
@@ -805,19 +851,24 @@ const B787 = airliner({
   description:
     'A long, flexible wing and two huge engines. Fly-by-wire with protections, and far more momentum than the narrow-bodies.',
   mass: 180_000,
-  thrust: 320_000,
-  thrustLabel: '2 × 72,000 lbf',
+  thrust: 316_000,
+  thrustLabel: '2 × 71,000 lbf',
   wingArea: 360.5,
   chord: 6.27,
   inertia: [32_000_000, 44_000_000, 14_000_000],
   flyByWire: true,
   flapLabels: ['Up', '5', '15', '20', '30'],
-  fuelCapacity: 60_000,
+  fuelCapacity: 101_500,
   fuelDump: true,
   gear: { y: 5, noseZ: -24, mainX: 4.9, mainZ: 1.6 },
-  stallSpeed: 103,
-  flapSpeeds: [250, 210, 200, 180],
+  stallSpeed: 111,
+  flapSpeeds: [240, 220, 210, 180],
   gearSpeed: 270,
+  vmo: 350,
+  mmo: 0.9,
+  // Boeing's published approach speed, 153 kt at maximum landing weight, needs less lift
+  // from the flaps than the narrow-bodies get
+  flapLift: 0.8,
   climb: 2700,
   shape: {
     type: 'airliner',
@@ -855,19 +906,24 @@ const A380 = airliner({
   description:
     'Four engines and 390 tonnes on an 80-metre wing. Everything takes time: plan your turns and your stop well ahead.',
   mass: 390_000,
-  thrust: 311_000,
-  thrustLabel: '4 × 70,000 lbf',
+  thrust: 334_000,
+  thrustLabel: '4 × 75,000 lbf',
   wingArea: 845,
   chord: 11,
   inertia: [130_000_000, 200_000_000, 80_000_000],
   flyByWire: true,
+  pitchLimit: true,
   flapLabels: ['0', '1', '2', '3', 'FULL'],
-  fuelCapacity: 150_000,
+  fuelCapacity: 254_000,
   fuelDump: true,
   gear: { y: 6.6, noseZ: -28, mainX: 6.2, mainZ: 2 },
   stallSpeed: 100,
   flapSpeeds: [263, 220, 196, 182],
   gearSpeed: 250,
+  vmo: 340,
+  mmo: 0.89,
+  // Only the two inner engines have reversers
+  reverseThrust: 0.2,
   climb: 2000,
   shape: {
     type: 'airliner',
@@ -906,7 +962,8 @@ const A380 = airliner({
  * attack, but nothing limits the bank.
  */
 function concorde(): AircraftSpec {
-  const mass = 130_000
+  // Full tanks bring it to its 185 t maximum takeoff weight
+  const mass = 118_000
   const weight = mass * GRAVITY
   const gear = { y: 5.4, noseZ: -16, mainX: 3.85, mainZ: 8 }
   const noseShare = gear.mainZ / (gear.mainZ - gear.noseZ)
@@ -956,7 +1013,7 @@ function concorde(): AircraftSpec {
     role: 'Supersonic airliner',
     description:
       'Mach 2 above 55,000 ft on four reheated engines. Droop the nose with F to see the runway, and land fast and nose-high.',
-    stats: { power: '4 × 38,050 lbf', topSpeed: 1320, stallSpeed: 135, climb: 5000 },
+    stats: { power: '4 × 38,050 lbf', topSpeed: 1180, stallSpeed: 135, climb: 5000 },
 
     mass,
     inertiaPitch: 20_000_000,
@@ -1006,22 +1063,24 @@ function concorde(): AircraftSpec {
     cnRudder: 0.09,
     cnAileron: -0.002,
 
-    // Ram air in the intakes raises thrust with speed, which lets it cruise without reheat
+    // Ram air in the intakes raises thrust with speed, enough to cruise at Mach 2.02
+    // without reheat, as the real aircraft did
     engine: {
       type: 'jet',
       idleThrust: 20_000,
       militaryThrust: 557_000,
       afterburnerThrust: 677_000,
       afterburnerFrom: 0.85,
-      speedLapse: -0.47
+      speedLapse: -0.08
     },
     engineCount: 4,
     spoolSeconds: 3,
     starterSeconds: 5,
     fuelCapacity: 95_000,
     fuelDump: true,
+    // Reheat burns about 1.4 kg of fuel per newton each hour
     fuelBurnIdle: 0.5,
-    fuelBurnFull: 40,
+    fuelBurnFull: 27,
     fuelUnit: { label: 'kg', perKg: 1 },
 
     flapLabels: ['Up', '5°', '12.5°'],
@@ -1032,11 +1091,13 @@ function concorde(): AircraftSpec {
     retractableGear: true,
     gearSeconds: 7,
     reverseThrust: 0.3,
-    flyByWire: { alphaMargin: 0.05, maxBank: Number.POSITIVE_INFINITY },
+    // Stops the nose at 25° up, well past a normal 13° rotation, so a long pull cannot loop it
+    flyByWire: { alphaMargin: 0.05, maxBank: Number.POSITIVE_INFINITY, maxPitch: 0.44 },
     autobrake: true,
 
     maneuverSpeed: 165,
     neverExceedSpeed: 530 * KNOT,
+    maxMach: 2.04,
     maxTouchdownSink: 4.5,
     gearTravel: 0.6,
     brakeFriction: 0.5,
@@ -1104,16 +1165,231 @@ function concorde(): AircraftSpec {
 
 const CONCORDE = concorde()
 
+/**
+ * The B-2 Spirit, from its published figures: 52.4 m span, 21 m long, 478 m² of wing,
+ * 71,700 kg empty, 75,750 kg of fuel, four 77 kN F118 turbofans with no afterburner,
+ * 550 kt at 40,000 ft, and a 50,000 ft ceiling. The aerodynamics follow from that shape:
+ * a flying wing of aspect ratio 5.7, swept 33°, with no flaps, no fin, and no reversers.
+ */
+function b2(): AircraftSpec {
+  // Empty, plus crew, a light load, and the 30% of the tanks every listed mass includes
+  const mass = 104_000
+  const weight = mass * GRAVITY
+  const gear = { y: 3.2, noseZ: -6, mainX: 6, mainZ: 1 }
+  const noseShare = gear.mainZ / (gear.mainZ - gear.noseZ)
+  const spring = (load: number, sag: number) => {
+    const stiffness = load / sag
+    return [stiffness, 1.1 * Math.sqrt((stiffness * load) / GRAVITY)] as const
+  }
+  const [noseSpring, noseDamper] = spring(weight * noseShare, 0.08)
+  const [mainSpring, mainDamper] = spring((weight * (1 - noseShare)) / 2, 0.22)
+  const halfSpan = 26.2
+  // Leading edge swept 33° from the nose; the trailing edge zigzags back to the centre
+  const shape: BomberShape = {
+    type: 'bomber',
+    outline: [
+      [0, -10.5],
+      [halfSpan, 6.5],
+      [halfSpan, 7.6],
+      [13.5, 8.3],
+      [8.5, 5],
+      [0, 10.5]
+    ],
+    engines: [
+      [3.6, 0],
+      [5.8, 0]
+    ],
+    paint: '#3d4147',
+    accent: '#2a2d32'
+  }
+  return {
+    id: 'b2',
+    name: 'B-2 Spirit',
+    label: 'B-2',
+    role: 'Stealth strategic bomber',
+    description:
+      'A flying wing with no tail. The computers keep it pointing straight. It has no flaps, so it lands fast and floats a long way.',
+    stats: { power: '4 × 17,300 lbf', topSpeed: 550, stallSpeed: 108, climb: 3000 },
+
+    mass,
+    // Mass spread along the span: hard to roll, easy to pitch, as the whole aircraft is
+    // only 21 m long
+    inertiaPitch: 1_900_000,
+    inertiaYaw: 7_000_000,
+    inertiaRoll: 5_200_000,
+    wingArea: 478,
+    wingSpan: halfSpan * 2,
+    chord: 12,
+
+    // Lift slope of a wing of aspect ratio 5.7 swept about 20° at mid-chord. Without flaps
+    // it stalls near CL 1.1, about 108 kt at landing weight.
+    cl0: 0.05,
+    clAlpha: 4.28,
+    flapLift: 0,
+    stallAlpha: 0.255,
+    negativeStallAlpha: 0.2,
+    flapStallShift: 0,
+    stallSharpness: 30,
+    stallHysteresis: 0.07,
+    stallWarningMargin: 0.06,
+
+    // A clean flying wing: with an efficiency of 0.8, this drag gives the reported best
+    // lift-to-drag ratio of about 19
+    cd0: 0.0095,
+    // Two big four-wheel bogies and their doors: the only drag it has to slow down on final
+    gearDrag: 0.02,
+    flapDrag: 0,
+    inducedDrag: 0.069,
+    sideDrag: 0.4,
+    sideForce: -0.3,
+    // Drag rises toward Mach 0.95, the published top speed
+    dragRiseMach: 0.95,
+    waveDrag: 0.03,
+    // The split drag rudders at the wingtips open together as an airbrake
+    speedBrakeDrag: 0.04,
+    liftDump: 0.1,
+
+    // Relaxed stability: the centre of gravity sits a few per cent of the chord ahead of
+    // the neutral point, and the fly-by-wire does the rest. The elevons pitch and roll it.
+    cm0: 0.015,
+    cmAlpha: -0.25,
+    cmPitchRate: -4,
+    cmElevator: 0.15,
+    cmTrim: 0.25,
+    cmStall: -0.05,
+
+    // Roll damping of a pointed, untapered wing, and the dihedral effect of its sweep
+    clBeta: -0.05,
+    clRollRate: -0.36,
+    clYawRate: 0.06,
+    clAileron: 0.045,
+    stallRollBias: 0.006,
+
+    // With no fin the bare airframe barely points into the wind. The flight computers
+    // work the split drag rudders to make it behave as if it had one.
+    cnBeta: 0.05,
+    cnYawRate: -0.15,
+    cnRollRate: -0.01,
+    cnRudder: 0.02,
+    cnAileron: -0.002,
+
+    // Thrust falls off with speed so that full power gives the published 550 kt at
+    // 40,000 ft, and about 520 kt low down
+    engine: {
+      type: 'jet',
+      idleThrust: 12_300,
+      militaryThrust: 308_000,
+      afterburnerThrust: 308_000,
+      afterburnerFrom: 1,
+      speedLapse: 0.45
+    },
+    engineCount: 4,
+    spoolSeconds: 4,
+    starterSeconds: 5,
+    fuelCapacity: 75_750,
+    fuelDump: false,
+    // About 0.6 kg of fuel per newton of thrust each hour at full power
+    fuelBurnIdle: 0.3,
+    fuelBurnFull: 5.2,
+    fuelUnit: { label: 'kg', perKg: 1 },
+
+    flapLabels: ['Up'],
+    flapName: 'Flaps',
+    flapSpeeds: [],
+    gearSpeed: 230,
+    flapSecondsPerNotch: 1,
+    retractableGear: true,
+    gearSeconds: 8,
+    reverseThrust: 0,
+    flyByWire: { alphaMargin: 0.05, maxBank: 1.15, maxPitch: 0.44 },
+    autobrake: true,
+
+    // Where a full pull reaches the stall and a bomber's +2.5 g together
+    maneuverSpeed: 88,
+    // Mach 0.95 at sea level
+    neverExceedSpeed: 600 * KNOT,
+    maxMach: 0.95,
+    maxTouchdownSink: 4.5,
+    gearTravel: 0.55,
+    brakeFriction: 0.5,
+    sideFriction: 0.8,
+    maxSteerAngle: 0.6,
+
+    contactPoints: [
+      wheel(0, -gear.y, gear.noseZ, noseSpring, noseDamper, 'nose'),
+      wheel(-gear.mainX, -gear.y, gear.mainZ, mainSpring, mainDamper, 'main'),
+      wheel(gear.mainX, -gear.y, gear.mainZ, mainSpring, mainDamper, 'main'),
+      // The centre trailing edge scrapes before the wing breaks on an over-rotation
+      skid(-0.45, 10, mainSpring)
+    ],
+    hullPoints: [
+      hull(0, -0.2, -10.3, true),
+      hull(0, -1.3, 0, true),
+      hull(-halfSpan, 0.4, 7),
+      hull(halfSpan, 0.4, 7),
+      hull(0, 2.1, -4),
+      hull(0, -0.1, 10.3, true),
+      hull(-13.5, -0.3, 8.2, true),
+      hull(13.5, -0.3, 8.2, true)
+    ],
+    restHeight: gear.y - 0.2,
+    wingtips: [new Vector3(-halfSpan, 0.4, 7), new Vector3(halfSpan, 0.4, 7)],
+    breakup: [
+      part(0, 0, 0, 2.5),
+      part(0, 0.5, -6.5, 1.5),
+      part(-15, 0, 4, 2),
+      part(15, 0, 4, 2),
+      part(0, 0, 8, 1.5)
+    ],
+
+    // Lifts off near 150 kt and lands near 140 kt with no flaps to slow it
+    rotateSpeed: 150,
+    climbSpeed: 250,
+    approachSpeed: 140,
+    cruiseSpeed: 125,
+    // Published takeoff run 2,040 m at full weight
+    runwayNeeded: 2600,
+    gauges: {
+      airspeed: {
+        min: 0,
+        max: 650,
+        labelEvery: 100,
+        tickEvery: 20,
+        flapRange: null,
+        normalRange: [150, 560],
+        cautionRange: [560, 600]
+      },
+      climb: 6000,
+      power: {
+        caption: 'N2 %',
+        max: 110,
+        labelEvery: 20,
+        tickEvery: 5,
+        labelScale: 1,
+        normalRange: [20, 100],
+        redline: 104
+      }
+    },
+    panel: 'glass',
+    camera: { distance: 85, height: 22, eye: new Vector3(-0.6, 1.5, -6.8) },
+    shape
+  }
+}
+
+const B2 = b2()
+
 /** Values the two fighters share. */
 const FIGHTER = {
   flapSecondsPerNotch: 1,
   retractableGear: true,
   gearSeconds: 4,
-  reverseThrust: 0.4,
+  // No thrust reversers, and the flight computer lowers the flaps with the gear
+  reverseThrust: 0,
   autobrake: false,
-  flapLabels: ['Up', '1', '2', 'Full'],
+  flapLabels: ['Up', 'Down'],
   flapName: 'Flaps' as const,
-  flapSpeeds: [300, 260, 240],
+  flapSpeeds: [300],
+  autoFlaps: true,
   gearSpeed: 300,
   engineCount: 1,
   spoolSeconds: 2,
@@ -1167,14 +1443,14 @@ const F16: AircraftSpec = {
   role: 'Single-engine jet fighter',
   description:
     'Twenty-nine thousand pounds of thrust with the afterburner lit. Fly-by-wire holds it short of the stall. Everything happens fast.',
-  stats: { power: '29,000 lbf', topSpeed: 718, stallSpeed: 128, climb: 40_000 },
+  stats: { power: '29,000 lbf', topSpeed: 1176, stallSpeed: 128, climb: 50_000 },
 
   mass: 11_000,
   inertiaPitch: 75_674,
   inertiaYaw: 85_552,
   inertiaRoll: 12_875,
   wingArea: 27.87,
-  wingSpan: 9.14,
+  wingSpan: 9.96,
   chord: 3.45,
 
   cl0: 0.04,
@@ -1213,7 +1489,8 @@ const F16: AircraftSpec = {
     militaryThrust: 76_000,
     afterburnerThrust: 127_000,
     afterburnerFrom: 0.85,
-    speedLapse: 0
+    // Ram air lifts the thrust with speed: about 800 kt low down, Mach 1.85 high up
+    speedLapse: -0.2
   },
   fuelCapacity: 3200,
   fuelDump: false,
@@ -1223,6 +1500,7 @@ const F16: AircraftSpec = {
 
   maneuverSpeed: 170,
   neverExceedSpeed: 800 * KNOT,
+  maxMach: 2.05,
 
   contactPoints: [
     wheel(0, -1.6, -3.5, 160_000, 22_000, 'nose'),
@@ -1266,9 +1544,10 @@ const F35: AircraftSpec = {
   role: 'Stealth strike fighter',
   description:
     'Heavier and wider than the F-16, with the most powerful fighter engine ever built. It flies at angles of attack that would stall anything else here.',
-  stats: { power: '43,000 lbf', topSpeed: 700, stallSpeed: 120, climb: 45_000 },
+  stats: { power: '43,000 lbf', topSpeed: 1040, stallSpeed: 120, climb: 45_000 },
 
-  mass: 20_000,
+  // Empty, with internal weapons and 30% fuel
+  mass: 18_000,
   inertiaPitch: 160_000,
   inertiaYaw: 190_000,
   inertiaRoll: 40_000,
@@ -1312,16 +1591,18 @@ const F35: AircraftSpec = {
     militaryThrust: 125_000,
     afterburnerThrust: 191_000,
     afterburnerFrom: 0.85,
-    speedLapse: 0
+    // Ram air lifts the thrust a little: 700 kt low down, Mach 1.6 high up
+    speedLapse: -0.05
   },
   fuelCapacity: 8300,
-  fuelDump: false,
+  fuelDump: true,
   fuelBurnIdle: 0.2,
   fuelBurnFull: 9.5,
   flyByWire: { alphaMargin: 0.1, maxBank: Number.POSITIVE_INFINITY },
 
   maneuverSpeed: 175,
   neverExceedSpeed: 700 * KNOT,
+  maxMach: 1.6,
 
   contactPoints: [
     wheel(0, -1.9, -4, 260_000, 40_000, 'nose'),
@@ -1358,12 +1639,13 @@ const F35: AircraftSpec = {
 }
 
 /** Every aircraft the player can fly, in picker order. */
-export const HANGAR: AircraftSpec[] = [CESSNA, A320, B737, B787, A380, CONCORDE, F16, F35]
+export const HANGAR: AircraftSpec[] = [CESSNA, A320, B737, B787, A380, CONCORDE, F16, F35, B2]
 export const DEFAULT_AIRCRAFT = CESSNA
 
 /** Distance of each engine from the centreline, numbered from the left wingtip. */
 export function engineArms(spec: AircraftSpec) {
-  if (spec.shape.type !== 'airliner') return [0]
-  const right = spec.shape.engines.map(([x]) => x).sort((a, b) => a - b)
+  const { shape } = spec
+  if (shape.type !== 'airliner' && shape.type !== 'bomber') return [0]
+  const right = shape.engines.map(([x]) => x).sort((a, b) => a - b)
   return [...right.map(x => -x).reverse(), ...right]
 }

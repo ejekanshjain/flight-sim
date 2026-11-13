@@ -546,7 +546,8 @@ class Game {
   private placeAtStand() {
     const spec = this.changeAircraft()
     const airport = this.state.departure
-    const stands = spec.panel === 'glass' ? airport.gates : airport.ramps
+    // Airliners park at the terminal; everything else parks in front of the hangars
+    const stands = spec.shape.type === 'airliner' ? airport.gates : airport.ramps
     const stand = stands[Math.floor(stands.length / 2)]
     this.sim.placeOnGround(stand.x, stand.z, stand.heading)
     // At the stand everything starts cold and dark

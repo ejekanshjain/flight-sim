@@ -38,10 +38,10 @@ const five = [0, 1, 2, 3, 4]
 /** Smallest signed difference from one heading to another, in degrees. */
 const turnDegrees = (from: number, to: number) => ((((to - from) % 360) + 540) % 360) - 180
 
-/** Highest safe indicated airspeed in knots: the red line, or the flap or gear limit. */
+/** Highest safe indicated airspeed in knots: the red line or Mach limit, or the flap or gear limit. */
 function maximumSpeed(sim: FlightSim) {
   const spec = sim.spec
-  let limit = spec.neverExceedSpeed * KNOTS_PER_MS
+  let limit = sim.speedLimit * KNOTS_PER_MS
   const notches = spec.flapLabels.length - 1
   const notch = Math.ceil(sim.flapPosition * notches - 0.02)
   if (notch > 0) limit = Math.min(limit, spec.flapSpeeds[notch - 1])
@@ -518,9 +518,12 @@ export function EngineDisplay({ spec }: { spec: AircraftSpec }) {
           `FUEL  ${Math.round(sim.fuel * unit.perKg)} ${unit.label.toUpperCase()}`
         )
         const notch = Math.round(sim.flapPosition * (spec.flapLabels.length - 1))
+        // An aircraft without flaps has nothing to show
         setText(
           flaps.current,
-          `${spec.flapName.toUpperCase()}  ${spec.flapLabels[notch].toUpperCase()}`
+          spec.flapLabels.length > 1
+            ? `${spec.flapName.toUpperCase()}  ${spec.flapLabels[notch].toUpperCase()}`
+            : ''
         )
         const down = sim.gearPosition >= 0.99
         setText(
@@ -619,10 +622,9 @@ export function HeadUpDisplay({ spec }: { spec: AircraftSpec }) {
           heading.current,
           String(Math.round(sim.heading * DEGREES) % 360 || 360).padStart(3, '0')
         )
-        const mach = sim.trueAirspeed / 340
         setText(
           data.current,
-          `G ${sim.gLoad.toFixed(1)}    M ${mach.toFixed(2)}    AOA ${alpha.toFixed(0)}°`
+          `G ${sim.gLoad.toFixed(1)}    M ${sim.mach.toFixed(2)}    AOA ${alpha.toFixed(0)}°`
         )
       },
       [centerX, centerY, perDegree]

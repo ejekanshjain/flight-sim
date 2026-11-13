@@ -20,6 +20,12 @@ import { WEATHER } from '../world/weather'
 import { cloudLight, fogUniform, HAZE_GLSL, horizon, SUN_DIRECTION, sunColor } from './atmosphere'
 import { useDisposal } from './dispose'
 import { environment, updateEnvironment } from './environment'
+import {
+  LOG_DEPTH_FRAGMENT,
+  LOG_DEPTH_FRAGMENT_PARS,
+  LOG_DEPTH_VERTEX,
+  LOG_DEPTH_VERTEX_PARS
+} from './logDepth'
 import { detailTexture } from './textures'
 
 /** Sets the sky, haze, and light for the time of day, the weather, and the camera height. */
@@ -44,11 +50,13 @@ const DECK_VERTEX = /* glsl */ `
   attribute float side;
   varying vec3 vWorld;
   varying float vSide;
+  ${LOG_DEPTH_VERTEX_PARS}
   void main() {
     vec4 world = modelMatrix * vec4(position, 1.0);
     vWorld = world.xyz;
     vSide = side;
     gl_Position = projectionMatrix * viewMatrix * world;
+    ${LOG_DEPTH_VERTEX}
   }
 `
 
@@ -63,7 +71,9 @@ const DECK_FRAGMENT = /* glsl */ `
   varying vec3 vWorld;
   varying float vSide;
   ${HAZE_GLSL}
+  ${LOG_DEPTH_FRAGMENT_PARS}
   void main() {
+    ${LOG_DEPTH_FRAGMENT}
     vec2 p = vWorld.xz;
     // Billows at two scales, so the deck is lumpy from far and near
     float lumps = texture2D(detailMap, p * 0.00011).a * 0.6 + texture2D(detailMap, p * 0.0007).a * 0.4;
@@ -151,6 +161,7 @@ const RAIN_VERTEX = /* glsl */ `
   uniform vec3 streak;
   uniform float box;
   varying float vTail;
+  ${LOG_DEPTH_VERTEX_PARS}
   void main() {
     // Each drop falls through the box and wraps around, so the box always stays full
     vec3 drop = position - vec3(0.0, time * 9.0, 0.0) - eye;
@@ -159,13 +170,16 @@ const RAIN_VERTEX = /* glsl */ `
     drop += streak * tail;
     vTail = tail;
     gl_Position = projectionMatrix * viewMatrix * vec4(drop, 1.0);
+    ${LOG_DEPTH_VERTEX}
   }
 `
 
 const RAIN_FRAGMENT = /* glsl */ `
   uniform vec3 daylight;
   varying float vTail;
+  ${LOG_DEPTH_FRAGMENT_PARS}
   void main() {
+    ${LOG_DEPTH_FRAGMENT}
     gl_FragColor = vec4(daylight * 0.9 + 0.08, 0.32 * (1.0 - vTail * 0.7));
   }
 `
