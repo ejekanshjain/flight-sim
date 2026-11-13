@@ -12,6 +12,7 @@ import { Pilot } from './pilot'
 
 const STEP = 1 / 120
 const CALM = new Vector3()
+const DEGREE = Math.PI / 180
 
 test('every gate stands clear of the ground and close enough to the next to fly', () => {
   for (const mission of MISSIONS) {
@@ -164,8 +165,10 @@ test('passengers forgive a brief steep bank but not a long one', () => {
 
 const turnTo = (from: number, to: number) => Math.atan2(Math.sin(to - from), Math.cos(to - from))
 
-test('a scripted B-2 crew passes every bombing mission', () => {
-  for (const mission of MISSIONS.filter(candidate => candidate.category === 'Bombing')) {
+test('a scripted B-2 crew passes every bombing mission with targets', () => {
+  // Bombing missions with targets to aim at. Demolition, over a whole city, has none.
+  const aimed = MISSIONS.filter(candidate => candidate.bombs && candidate.targets?.length)
+  for (const mission of aimed) {
     const spec = HANGAR.find(candidate => candidate.id === mission.aircraft)
     const start = mission.start
     if (!spec || start.kind !== 'air') throw new Error('Missing mission')
@@ -188,7 +191,15 @@ test('a scripted B-2 crew passes every bombing mission', () => {
     runner.start(mission, sim)
     const bombs = new Bombs()
     bombs.load(mission.bombs ?? 0, mission.targets ?? [], mission.guided)
-    const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null, bombs }
+    const context = {
+      sim,
+      controls: pilot.controls,
+      pilot,
+      nav,
+      parkedAt: null,
+      bombs,
+      bombsight: true
+    }
     let result = null
     let pressed = Number.NEGATIVE_INFINITY
     for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
@@ -218,4 +229,264 @@ test('a scripted B-2 crew passes every bombing mission', () => {
     expect(sim.crash).toBeNull()
     expect(result).toMatchObject({ passed: true })
   }
+})
+
+/** An A320 just above the sea, sinking at `sink` m/s with the gear up or down. */
+function overSea(sink: number, gearDown: boolean) {
+  const spec = HANGAR.find(candidate => candidate.id === 'a320')
+  if (!spec) throw new Error('Missing a320')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  // Open sea east of Coral Bay, the engine pods half a metre above the water
+  sim.placeInAir(9000, 3.6, -4900, Math.PI / 2, 70)
+  sim.velocity.y = -sink
+  sim.gearPosition = gearDown ? 1 : 0
+  const controls = { ...new Pilot().controls, throttle: 0, gearDown }
+  for (let time = 0; time < 40 && !sim.crash; time += STEP) sim.step(STEP, controls, CALM)
+  return sim
+}
+
+test('a gentle touch on the sea with the gear up is a ditching that floats to a stop', () => {
+  const sim = overSea(1, false)
+  expect(sim.crash).toBeNull()
+  expect(sim.ditched).toBe(true)
+  expect(sim.groundSpeed).toBeLessThan(1.5)
+  // Gear down the wheels dig in, and sinking fast the hull breaks up
+  expect(overSea(1, true).crash).toBe('water')
+  expect(overSea(6, false).crash).toBe('water')
+})
+
+test('an engine fire goes out only once the engine is shut down', () => {
+  const spec = HANGAR.find(candidate => candidate.id === 'a320')
+  if (!spec) throw new Error('Missing a320')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  sim.placeInAir(9000, 1500, -4900, Math.PI / 2, 110)
+  sim.engines[0].fire = true
+  expect(sim.extinguish(0, true)).toBe(false)
+  expect(sim.engines[0].fire).toBe(true)
+  expect(sim.extinguish(0, false)).toBe(true)
+  expect(sim.engines[0].fire).toBe(false)
+})
+
+test('a crew that puts out both fires and ditches gently passes Double Engine Fire', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'dual-fire')
+  const spec = HANGAR.find(candidate => candidate.id === 'a320')
+  const start = mission?.start
+  if (!mission || !spec || start?.kind !== 'air') throw new Error('Missing mission')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  sim.placeInAir(
+    start.x,
+    start.altitude,
+    start.z,
+    (start.heading * Math.PI) / 180,
+    start.speed * KNOT
+  )
+  const pilot = new Pilot()
+  pilot.resetForAir(spec, sim)
+  Object.assign(pilot.controls, sim.settleOnPath(0, 0, false, CALM))
+  pilot.engage(true, sim)
+  const nav = new Navigator()
+  const runner = new MissionRunner()
+  runner.start(mission, sim)
+  const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null }
+  const tap = (code: string, shift = false) => {
+    pilot.press(code, false, sim, nav, shift)
+    pilot.release(code)
+  }
+  let result = null
+  for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
+    const burning = sim.engines.some(engine => engine.fire)
+    if (burning && pilot.controls.engineSwitches[0])
+      for (const key of ['Digit1', 'Digit2']) tap(key)
+    else if (burning) for (const key of ['Digit1', 'Digit2']) tap(key, true)
+    if (time > 10 && !nav.approach) nav.cycle(sim, 0)
+    // Glide north over open sea, level off just above the water until slow, then settle
+    pilot.autopilot.heading = 0
+    const slow = sim.indicatedAirspeed / KNOT < 160
+    const height = sim.position.y - (slow ? 0 : 12)
+    const sink = sim.position.y < 15 && !slow ? 0 : Math.min(6, Math.max(1, height / 7))
+    pilot.autopilot.hold = sim.position.y - sink / 0.12
+    pilot.update(STEP, sim, nav)
+    sim.step(STEP, pilot.controls, CALM)
+    result = runner.update(STEP, context)
+  }
+  expect(sim.crash).toBeNull()
+  expect(sim.ditched).toBe(true)
+  expect(result).toMatchObject({ passed: true })
+})
+
+test('a scripted crew passes every missile strike mission', () => {
+  for (const mission of MISSIONS.filter(candidate => candidate.missiles)) {
+    const spec = HANGAR.find(candidate => candidate.id === mission.aircraft)
+    const start = mission.start
+    if (!spec || start.kind !== 'air') throw new Error('Missing mission')
+    const sim = new FlightSim(ISLAND_GROUND, spec)
+    sim.placeInAir(
+      start.x,
+      start.altitude,
+      start.z,
+      (start.heading * Math.PI) / 180,
+      start.speed * KNOT
+    )
+    const pilot = new Pilot()
+    pilot.resetForAir(spec, sim)
+    Object.assign(pilot.controls, sim.settleOnPath(0, 0, false, CALM))
+    pilot.engage(true, sim)
+    const nav = new Navigator()
+    const runner = new MissionRunner()
+    runner.start(mission, sim)
+    const bombs = new Bombs()
+    bombs.load(0, mission.targets ?? [], false, mission.missiles)
+    const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null, bombs }
+    let result = null
+    for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
+      // Fly at the nearest target, coming down to about 2,600 ft above the range
+      const target = bombs.targets[bombs.nearestStanding(sim.position.x, sim.position.z)]
+      if (target) {
+        pilot.autopilot.heading = Math.atan2(target.x - sim.position.x, sim.position.z - target.z)
+        pilot.autopilot.hold = RANGE.elevation + 800
+      }
+      if (bombs.lock >= 0) bombs.fire(sim)
+      pilot.update(STEP, sim, nav)
+      sim.step(STEP, pilot.controls, CALM)
+      bombs.update(STEP, sim, ISLAND_GROUND)
+      result = runner.update(STEP, context)
+    }
+    expect(sim.crash).toBeNull()
+    expect(result).toMatchObject({ passed: true })
+  }
+})
+
+/** Steps a mission until it ends or the aircraft crashes, letting `fly` work the controls. */
+function runMission(
+  mission: (typeof MISSIONS)[number],
+  sim: FlightSim,
+  pilot: Pilot,
+  fly: (time: number) => void
+) {
+  const nav = new Navigator()
+  const runner = new MissionRunner()
+  runner.start(mission, sim)
+  const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null }
+  let result = null
+  // Missions without a time limit get five minutes
+  const seconds = mission.timeLimit ?? 300
+  for (let time = 0; time < seconds && !result && !sim.crash; time += STEP) {
+    fly(time)
+    sim.step(STEP, pilot.controls, CALM)
+    result = runner.update(STEP, context)
+  }
+  return result
+}
+
+/** A mission's aircraft placed at its air start, the way the game does it. */
+function airStart(id: string) {
+  const mission = MISSIONS.find(candidate => candidate.id === id)
+  const spec = HANGAR.find(candidate => candidate.id === mission?.aircraft)
+  const start = mission?.start
+  if (!mission || !spec || start?.kind !== 'air') throw new Error(`Missing mission ${id}`)
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  const heading = (start.heading * Math.PI) / 180
+  sim.placeInAir(start.x, start.altitude, start.z, heading, start.speed * KNOT)
+  const pilot = new Pilot()
+  pilot.resetForAir(spec, sim)
+  const glide = ((start.glide ?? 0) * Math.PI) / 180
+  Object.assign(pilot.controls, sim.settleOnPath(glide, 0, false, CALM))
+  pilot.controls.speedBrake = start.speedBrake ?? false
+  return { mission, spec, sim, pilot, heading }
+}
+
+const turnFrom = (from: number, to: number) => Math.atan2(Math.sin(to - from), Math.cos(to - from))
+const limit = (value: number) => Math.max(-1, Math.min(1, value))
+
+test('a scripted crew rides the steep glide and lands the Shuttle', () => {
+  const { mission, spec, sim, pilot, heading } = airStart('shuttle-landing')
+  const runway = AIRPORTS.find(airport => airport.code === 'PAZ')?.runways[0]
+  if (!runway) throw new Error('Missing runway')
+  const elevation = heightAt(runway.x, runway.z)
+  const c = pilot.controls
+  let attitude = sim.pitch
+  const result = runMission(mission, sim, pilot, () => {
+    const height = Math.min(sim.altitudeAgl, sim.position.y - elevation) - spec.restHeight
+    const knots = sim.indicatedAirspeed / KNOT
+    if (sim.onGround) {
+      // Lower the nose at 1.5°/s and brake
+      attitude = Math.max(-0.02, attitude - 1.5 * DEGREE * STEP)
+      c.pitch = limit((attitude - sim.pitch) * 8 - sim.angularVelocity.x * 4)
+      c.brake = 1
+      return
+    }
+    // 19° down the outer glideslope, a preflare from 2,000 ft onto 1.5°, then the flare
+    let glide = 19
+    if (height < 610) glide = 1.5 + 17.5 * Math.sqrt(Math.max(0, (height - 50) / 560))
+    if (height < 25) glide = 0.25 + (height / 25) * 1.25
+    const error = -sim.trueAirspeed * Math.sin(glide * DEGREE) - sim.verticalSpeed
+    attitude += error * 0.01 * STEP
+    c.pitch = limit((attitude + error * 0.012 - sim.pitch) * 4 - sim.angularVelocity.x * 2)
+    const track = Math.atan2(sim.velocity.x, -sim.velocity.z)
+    c.roll = limit((turnFrom(track, heading) * 2 - sim.bank) * 3)
+    c.speedBrake = height > 610 && (knots > 300 || (c.speedBrake && knots > 290))
+    c.gearDown = height < 91
+  })
+  expect(sim.crash).toBeNull()
+  expect(result).toMatchObject({ passed: true })
+})
+
+test('a pilot holding right rudder keeps the Mustang straight and climbs away', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'mustang-takeoff')
+  const spec = HANGAR.find(candidate => candidate.id === 'p51')
+  const runway = AIRPORTS.find(airport => airport.code === 'CBI')?.runways[0]
+  if (!mission || !spec || !runway) throw new Error('Missing mission')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  const start = fromStrip(runway, -runway.length / 2 + 150, 0)
+  const course = (runway.heading * Math.PI) / 180
+  sim.placeOnGround(start.x, start.z, course)
+  const pilot = new Pilot()
+  pilot.resetForGround(sim, false)
+  const c = pilot.controls
+  const tap = (code: string) => {
+    pilot.press(code, false, sim)
+    pilot.release(code)
+  }
+  const result = runMission(mission, sim, pilot, time => {
+    if (time > 0.5 && !c.engineSwitches[0]) tap('KeyI')
+    if (sim.enginesRunning && c.parkingBrake) tap('KeyP')
+    pilot.update(STEP, sim)
+    if (sim.enginesRunning) c.throttle = 1
+    // Rudder holds the runway heading; the stick keeps the tail down, then lifts off
+    c.yaw = limit(turnFrom(sim.heading, course) * 6 - sim.turnRate * 2)
+    const wanted = sim.onGround ? (sim.indicatedAirspeed / KNOT > 105 ? 0.2 : sim.pitch) : 0.15
+    c.pitch = limit((wanted - sim.pitch) * 3 - sim.angularVelocity.x)
+    c.roll = limit(-sim.bank * 2)
+    if (!sim.onGround && sim.altitudeAgl > 30) c.gearDown = false
+  })
+  expect(sim.crash).toBeNull()
+  expect(result).toMatchObject({ passed: true })
+})
+
+test('a racing pilot banking steeply flies the Mustang lap in time', () => {
+  const { mission, sim, pilot } = airStart('mustang-race')
+  pilot.engage(true, sim)
+  const runner = { gates: 0 }
+  const result = runMission(mission, sim, pilot, () => {
+    const gate = mission.gates?.[runner.gates]
+    if (gate) {
+      // Count gates as the mission does, to steer for the next
+      const near = Math.hypot(
+        gate.x - sim.position.x,
+        gate.y - sim.position.y,
+        gate.z - sim.position.z
+      )
+      if (near < gate.radius) runner.gates++
+      pilot.autopilot.heading = Math.atan2(gate.x - sim.position.x, sim.position.z - gate.z)
+      pilot.autopilot.hold = gate.y
+    }
+    pilot.update(STEP, sim)
+    pilot.controls.throttle = 1
+    // Up to 40° of bank toward the next gate; the autopilot holds the height
+    const track = Math.atan2(sim.velocity.x, -sim.velocity.z)
+    const bank = Math.max(-0.7, Math.min(0.7, turnFrom(track, pilot.autopilot.heading) * 4))
+    pilot.controls.roll = limit((bank - sim.bank) * 1.5 + sim.angularVelocity.z * 0.3)
+  })
+  expect(sim.crash).toBeNull()
+  expect(result).toMatchObject({ passed: true })
 })

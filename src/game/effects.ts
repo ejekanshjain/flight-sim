@@ -28,7 +28,7 @@ type Puff = {
   gravity?: number
 }
 
-const CAPACITY = 4000
+export const EFFECTS_CAPACITY = 9000
 // Floats stored per particle
 const STRIDE = 20
 
@@ -43,6 +43,9 @@ const EMBER: Rgb = [0.75, 0.1, 0.01]
 const SPARK: Rgb = [1.8, 0.9, 0.25]
 const SPRAY: Rgb = [0.85, 0.9, 0.93]
 
+/** Seconds a bomb's shock ring takes to spread out and fade. */
+export const SHOCKWAVE_LIFE = 1.6
+
 const spot = new Vector3()
 const random = (min: number, max: number) => min + Math.random() * (max - min)
 
@@ -52,13 +55,15 @@ const random = (min: number, max: number) => min + Math.random() * (max - min)
  */
 export class Effects {
   /** Packed particle state. See the offsets in `add` for the layout. */
-  readonly data = new Float32Array(CAPACITY * STRIDE)
+  readonly data = new Float32Array(EFFECTS_CAPACITY * STRIDE)
   count = 0
   /** Brightness of the explosion light, 1 at the moment of the blast. */
   flash = 0
   readonly flashPosition = new Vector3()
   /** Camera shake strength from 0 to 1. */
   shake = 0
+  /** Shock rings racing out across the ground from bomb blasts, oldest first. */
+  readonly shockwaves: { x: number; y: number; z: number; age: number }[] = []
 
   // Nose wheel and both main wheels
   private readonly wheelWasDown = [true, true, true]
@@ -71,11 +76,12 @@ export class Effects {
     this.count = 0
     this.flash = 0
     this.shake = 0
+    this.shockwaves.length = 0
     this.wheelWasDown.fill(true)
   }
 
   add(puff: Puff) {
-    if (this.count >= CAPACITY) return
+    if (this.count >= EFFECTS_CAPACITY) return
     const fade = puff.fadeTo ?? puff.color
     this.data.set(
       [
@@ -125,6 +131,8 @@ export class Effects {
       d[o + 1] += d[o + 4] * dt
       d[o + 2] += d[o + 5] * dt
     }
+    for (const ring of this.shockwaves) ring.age += dt
+    while ((this.shockwaves[0]?.age ?? 0) > SHOCKWAVE_LIFE) this.shockwaves.shift()
     this.flash *= Math.exp(-dt * 5)
     this.shake *= Math.exp(-dt * 2.5)
   }
@@ -303,6 +311,105 @@ export class Effects {
     }
   }
 
+  /**
+   * A heavy bomb bursting on the ground: a white flash, a rolling fireball, a column of smoke
+   * that climbs and spreads, debris and sparks thrown high, and a ring of dust racing outward.
+   */
+  bombBlast(at: Vector3) {
+    this.flash = 6
+    this.flashPosition.copy(at).setY(at.y + 30)
+    this.shockwaves.push({ x: at.x, y: at.y, z: at.z, age: 0 })
+    const burst = (speed: number, upward: number) => {
+      const angle = Math.random() * Math.PI * 2
+      const rise = upward * Math.sqrt(Math.random())
+      const flat = Math.sqrt(1 - rise * rise)
+      return {
+        x: at.x,
+        y: at.y + 2,
+        z: at.z,
+        vx: Math.cos(angle) * flat * speed,
+        vy: rise * speed,
+        vz: Math.sin(angle) * flat * speed
+      }
+    }
+    this.add({
+      ...burst(0, 0),
+      life: 0.45,
+      size: 40,
+      growTo: 340,
+      color: WHITE,
+      opacity: 1,
+      glow: true
+    })
+    // Smoke first, so the fire draws over it. It climbs into a column and spreads at the top.
+    for (let i = 0; i < 70; i++) {
+      this.add({
+        ...burst(random(20, 75), random(0.75, 1)),
+        life: random(8, 14),
+        size: random(14, 24),
+        growTo: random(80, 140),
+        color: SOOT,
+        fadeTo: ASH,
+        opacity: 0.8,
+        drag: random(0.35, 0.7),
+        gravity: -1.5
+      })
+    }
+    for (let i = 0; i < 110; i++) {
+      this.add({
+        ...burst(random(12, 85), random(0.2, 1)),
+        life: random(1.8, 4),
+        size: random(14, 24),
+        growTo: random(50, 90),
+        color: FLAME,
+        fadeTo: EMBER,
+        opacity: 0.9,
+        glow: true,
+        drag: 1.6,
+        gravity: -6
+      })
+    }
+    // Debris and sparks arc high and fall back
+    for (let i = 0; i < 90; i++) {
+      this.add({
+        ...burst(random(40, 120), random(0.4, 1)),
+        life: random(3, 6),
+        size: random(1.5, 3.5),
+        growTo: random(1, 2.5),
+        color: SOOT,
+        opacity: 1,
+        drag: 0.15,
+        gravity: 9.8
+      })
+    }
+    for (let i = 0; i < 110; i++) {
+      this.add({
+        ...burst(random(50, 150), random(0.2, 1)),
+        life: random(1.2, 3),
+        size: random(1, 2),
+        growTo: 0.3,
+        color: SPARK,
+        fadeTo: EMBER,
+        opacity: 1,
+        glow: true,
+        drag: 0.3,
+        gravity: 9.8
+      })
+    }
+    // Dust kicked up by the shock, racing out low over the ground
+    for (let i = 0; i < 60; i++) {
+      this.add({
+        ...burst(random(100, 200), random(0, 0.08)),
+        life: random(2.5, 4),
+        size: random(10, 16),
+        growTo: random(50, 80),
+        color: DUST,
+        opacity: 0.6,
+        drag: 1.8
+      })
+    }
+  }
+
   /** Column of spray and a ring of foam for anything that hits the sea. */
   splash(at: Vector3, power: number) {
     this.shake = Math.max(this.shake, power * 0.6)
@@ -341,6 +448,108 @@ export class Effects {
         color: WHITE,
         opacity: 0.55,
         drag: 1.5
+      })
+    }
+  }
+
+  /** A missile's rocket flame and the white smoke trail it leaves hanging in the air. */
+  missileTrail(at: Vector3, dt: number) {
+    this.add({
+      x: at.x,
+      y: at.y,
+      z: at.z,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      life: 0.15,
+      size: 4,
+      growTo: 1,
+      color: FLAME,
+      opacity: 1,
+      glow: true
+    })
+    for (let n = Math.round(random(0, 2) * 40 * dt); n > 0; n--) {
+      this.add({
+        x: at.x + random(-0.3, 0.3),
+        y: at.y + random(-0.3, 0.3),
+        z: at.z + random(-0.3, 0.3),
+        vx: random(-0.5, 0.5),
+        vy: random(0, 0.6),
+        vz: random(-0.5, 0.5),
+        life: random(3.5, 5.5),
+        size: random(1.5, 2.5),
+        growTo: random(9, 14),
+        color: VAPOUR,
+        fadeTo: ASH,
+        opacity: 0.55,
+        drag: 0.6
+      })
+    }
+  }
+
+  /** A cloud of dust and grit rolling out from the foot of a building as it falls. */
+  collapse(at: Vector3) {
+    for (let i = 0; i < 5; i++) {
+      const angle = Math.random() * Math.PI * 2
+      const speed = random(3, 10)
+      this.add({
+        x: at.x,
+        y: at.y + random(1, 6),
+        z: at.z,
+        vx: Math.cos(angle) * speed,
+        vy: random(1, 5),
+        vz: Math.sin(angle) * speed,
+        life: random(3.5, 6),
+        size: random(5, 9),
+        growTo: random(18, 30),
+        color: DUST,
+        fadeTo: ASH,
+        opacity: 0.55,
+        drag: 0.8,
+        gravity: -0.3
+      })
+    }
+  }
+
+  /**
+   * A burning engine in flight: flames at the nacelle and black smoke left hanging in the air
+   * behind it, so the trail grows longer the faster the aircraft flies.
+   */
+  engineFire(at: Vector3, dt: number) {
+    for (let n = Math.round(random(0, 2) * 40 * dt); n > 0; n--) {
+      this.add({
+        x: at.x + random(-0.6, 0.6),
+        y: at.y + random(-0.4, 0.4),
+        z: at.z + random(-0.6, 0.6),
+        vx: random(-2, 2),
+        vy: random(-1, 2),
+        vz: random(-2, 2),
+        life: random(0.25, 0.6),
+        size: random(1.4, 2.6),
+        growTo: random(2.5, 4),
+        color: FLAME,
+        fadeTo: EMBER,
+        opacity: 0.9,
+        glow: true,
+        drag: 1
+      })
+    }
+    for (let n = Math.round(random(0, 2) * 24 * dt); n > 0; n--) {
+      this.add({
+        x: at.x,
+        y: at.y,
+        z: at.z,
+        vx: random(-1, 1),
+        vy: random(0, 2),
+        vz: random(-1, 1),
+        life: random(4, 7),
+        size: random(1.5, 3),
+        growTo: random(10, 16),
+        color: SOOT,
+        fadeTo: ASH,
+        opacity: 0.7,
+        drag: 0.5,
+        gravity: -0.4
       })
     }
   }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Vector3 } from 'three'
 import { Pilot } from '../game/pilot'
-import { type AircraftSpec, HANGAR, KNOT } from './aircraft'
+import { type AircraftSpec, HANGAR, isGlider, KNOT } from './aircraft'
 import { type Controls, FlightSim, type Ground } from './flight-sim'
 
 const STEP = 1 / 120
@@ -13,6 +13,11 @@ const A320 = find('a320')
 const F16 = find('f16')
 /** Big jets with airliner instruments: the airliners and the bomber. */
 const airliner = (spec: AircraftSpec) => spec.panel === 'glass'
+/** Nose-up pitch the gear holds when parked: level on a nose wheel, tail-down on a tail wheel. */
+const parkedPitch = (spec: AircraftSpec) => {
+  const [first, main] = spec.contactPoints.map(point => point.position)
+  return Math.atan((first.y - main.y) / (first.z - main.z))
+}
 
 function controls(overrides: Partial<Controls> = {}): Controls {
   return {
@@ -84,11 +89,12 @@ describe.each(HANGAR)('$name', spec => {
     run(sim, c, spec.starterSeconds * spec.engineCount + 1)
     expect(sim.enginesRunning).toBe(spec.engineCount)
     expect(sim.groundSpeed).toBeLessThan(0.3)
-    expect(Math.abs(sim.pitch)).toBeLessThan(0.05)
+    expect(Math.abs(sim.pitch - parkedPitch(spec))).toBeLessThan(0.05)
     expect(Math.abs(sim.position.y - 0.01 - spec.restHeight)).toBeLessThan(0.08)
   })
 
-  test('takes off and climbs', () => {
+  // A glider has nothing to take off or hold its speed with
+  test.skipIf(isGlider(spec))('takes off and climbs', () => {
     const sim = parked(spec)
     const c = controls({ throttle: 1, flapNotch: airliner(spec) ? 2 : 0 })
     let liftoffDistance = 0
@@ -115,27 +121,30 @@ describe.each(HANGAR)('$name', spec => {
     expect(sim.stall).toBeLessThan(0.1)
   })
 
-  test('the autopilot holds heading and altitude, and the autothrottle holds speed', () => {
-    const sim = flying(spec, 1500)
-    const pilot = new Pilot()
-    pilot.resetForAir(spec)
-    const fly = (seconds: number) => {
-      for (let time = 0; time < seconds && !sim.crash; time += STEP) {
-        pilot.update(STEP, sim)
-        sim.step(STEP, pilot.controls, CALM)
+  test.skipIf(isGlider(spec))(
+    'the autopilot holds heading and altitude, and the autothrottle holds speed',
+    () => {
+      const sim = flying(spec, 1500)
+      const pilot = new Pilot()
+      pilot.resetForAir(spec)
+      const fly = (seconds: number) => {
+        for (let time = 0; time < seconds && !sim.crash; time += STEP) {
+          pilot.update(STEP, sim)
+          sim.step(STEP, pilot.controls, CALM)
+        }
       }
+      fly(1)
+      pilot.press('KeyZ', false, sim)
+      pilot.press('KeyX', false, sim)
+      pilot.releaseAll()
+      const altitude = pilot.autopilot.hold
+      fly(90)
+      expect(sim.crash).toBeNull()
+      expect(Math.abs(sim.position.y - altitude)).toBeLessThan(40)
+      expect(Math.abs(Math.sin(sim.heading))).toBeLessThan(0.06)
+      expect(Math.abs(sim.indicatedAirspeed / pilot.autothrottle.speed - 1)).toBeLessThan(0.08)
     }
-    fly(1)
-    pilot.press('KeyZ', false, sim)
-    pilot.press('KeyX', false, sim)
-    pilot.releaseAll()
-    const altitude = pilot.autopilot.hold
-    fly(90)
-    expect(sim.crash).toBeNull()
-    expect(Math.abs(sim.position.y - altitude)).toBeLessThan(40)
-    expect(Math.abs(Math.sin(sim.heading))).toBeLessThan(0.06)
-    expect(Math.abs(sim.indicatedAirspeed / pilot.autothrottle.speed - 1)).toBeLessThan(0.08)
-  })
+  )
 
   if (spec.flyByWire) {
     test('fly-by-wire keeps the wing flying with the stick held fully back', () => {
@@ -380,4 +389,118 @@ test('an A320 cannot dump fuel', () => {
   expect(sim.dumping).toBe(false)
   // Only what the engines burn
   expect(before - sim.fuel).toBeLessThan(150)
+})
+
+test('a few seconds past the red line strain the airframe without breaking it', () => {
+  const sim = flying(CESSNA, 1000, CESSNA.neverExceedSpeed * 1.15)
+  const c = controls({ throttle: 0 })
+  run(sim, c, 3, () => holdAltitude(sim, c, 1000))
+  expect(sim.crash).toBeNull()
+})
+
+test('the P-51 tops out near 355 mph at sea level and stalls near 87 kt', () => {
+  const p51 = find('p51')
+  const fast = flying(p51, 300)
+  const full = controls({ throttle: 1, gearDown: false })
+  run(fast, full, 240, () => holdAltitude(fast, full, 300))
+  expect(fast.trueAirspeed / 0.44704).toBeGreaterThan(340)
+  expect(fast.trueAirspeed / 0.44704).toBeLessThan(370)
+
+  const slow = flying(p51, 1500, 80)
+  const idle = controls({ gearDown: false })
+  let stallSpeed = 0
+  run(slow, idle, 60, () => {
+    if (stallSpeed > 0) return
+    holdAltitude(slow, idle, 1500, 0.4)
+    if (slow.stall > 0.5) stallSpeed = slow.indicatedAirspeed
+  })
+  expect(stallSpeed / KNOT).toBeGreaterThan(82)
+  expect(stallSpeed / KNOT).toBeLessThan(95)
+})
+
+test('the P-51 takeoff roll needs right rudder against the propeller', () => {
+  const p51 = find('p51')
+  const sim = parked(p51)
+  const c = controls({ throttle: 1 })
+  const rudder: number[] = []
+  run(sim, c, 20, () => {
+    c.yaw = clamp(-Math.sin(sim.heading) * 4)
+    const knots = sim.indicatedAirspeed / KNOT
+    if (sim.onGround && knots > 40 && knots < 60) rudder.push(c.yaw)
+  })
+  expect(sim.crash).toBeNull()
+  // Two thirds of the rudder to the right near 50 kt, more than half on average
+  expect(rudder.reduce((sum, yaw) => sum + yaw, 0) / rudder.length).toBeGreaterThan(0.4)
+  expect(Math.abs(Math.sin(sim.heading))).toBeLessThan(0.2)
+})
+
+describe('Space Shuttle orbiter', () => {
+  const shuttle = find('shuttle')
+
+  /** Holds an indicated airspeed in m/s with the pitch attitude, damping the phugoid. */
+  function holdSpeed(sim: FlightSim, c: Controls, speed: number) {
+    let base = sim.pitch
+    let last = sim.indicatedAirspeed
+    return () => {
+      const error = sim.indicatedAirspeed - speed
+      const accel = (sim.indicatedAirspeed - last) / STEP
+      last = sim.indicatedAirspeed
+      base = Math.max(-0.7, Math.min(0.3, base + error * 0.0005 * STEP))
+      holdAttitude(sim, c, base + error * 0.004 + accel * 0.03)
+    }
+  }
+
+  test('glides about 4.5 m forward for each metre down at 250 KEAS', () => {
+    const sim = flying(shuttle, 9500, 350 * KNOT)
+    const c = controls({ gearDown: false })
+    const fly = holdSpeed(sim, c, 250 * KNOT)
+    // Height lost, counting any change in speed as height, over the last minute
+    const energy = () => sim.position.y + sim.trueAirspeed ** 2 / (2 * 9.81)
+    run(sim, c, 140, fly)
+    const [distance, height] = [-sim.position.z, energy()]
+    run(sim, c, 55, fly)
+    const ratio = (-sim.position.z - distance) / (height - energy())
+    expect(ratio).toBeGreaterThan(4.2)
+    expect(ratio).toBeLessThan(4.8)
+  })
+
+  test('lands from the 19° outer glideslope near 200 kt and stops on the runway', () => {
+    const DEGREE = Math.PI / 180
+    const sim = flying(shuttle, 3600, (300 * KNOT) / Math.sqrt(Math.exp(-3600 / 9000)))
+    sim.settleOnPath(19 * DEGREE, 0, false, CALM)
+    const c = controls({ gearDown: false })
+    let attitude = sim.pitch
+    let touchdown: { knots: number; sink: number; z: number } | null = null
+    run(sim, c, 200, () => {
+      const height = sim.altitudeAgl - shuttle.restHeight
+      const knots = sim.indicatedAirspeed / KNOT
+      if (sim.onGround || touchdown) {
+        // Lower the nose at 1.5°/s, with the speed brake and brakes on
+        touchdown ??= { knots, sink: -sim.verticalSpeed, z: sim.position.z }
+        attitude = Math.max(-0.02, attitude - 1.5 * DEGREE * STEP)
+        c.pitch = clamp((attitude - sim.pitch) * 8 - sim.angularVelocity.x * 4)
+        c.brake = knots < 140 ? 1 : 0
+        return
+      }
+      // The speed brake holds 300 kt down the outer glideslope. A preflare from 2,000 ft
+      // rounds out onto the 1.5° inner glideslope, then the flare at 80 ft.
+      let glide = 19
+      if (height < 610) glide = 1.5 + 17.5 * Math.sqrt(Math.max(0, (height - 50) / 560))
+      if (height < 25) glide = 0.25 + (height / 25) * 1.25
+      const error = -sim.trueAirspeed * Math.sin(glide * DEGREE) - sim.verticalSpeed
+      attitude += error * 0.01 * STEP
+      c.pitch = clamp((attitude + error * 0.012 - sim.pitch) * 4 - sim.angularVelocity.x * 2)
+      c.roll = clamp(-sim.bank * 3)
+      c.speedBrake = height > 610 && (knots > 300 || (c.speedBrake && knots > 290))
+      c.gearDown = height < 91
+    })
+    expect(sim.crash).toBeNull()
+    expect(touchdown).not.toBeNull()
+    const { knots, sink, z } = touchdown ?? { knots: 0, sink: 0, z: 0 }
+    expect(knots).toBeGreaterThan(190)
+    expect(knots).toBeLessThan(215)
+    expect(sink).toBeLessThan(2.5)
+    expect(sim.groundSpeed).toBeLessThan(1)
+    expect(z - sim.position.z).toBeLessThan(3000)
+  })
 })

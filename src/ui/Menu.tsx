@@ -14,7 +14,7 @@ const CRASH_REASONS: Record<CrashReason, string> = {
   'gear-up': 'You touched down with the gear up. Press G to lower it before landing.',
   'gear-collapse': 'The landing gear collapsed on rough ground.',
   overspeed:
-    'The aircraft flew past its never-exceed speed and broke up. Slow down at the red line.',
+    'The aircraft stayed far past its never-exceed speed and broke up. Throttle back when OVERSPEED shows. Low down the air is thick: climb before going fast.',
   tree: 'The aircraft flew into a tree.',
   building: 'The aircraft flew into a building.',
   balloon: 'The aircraft flew into a hot-air balloon.',
@@ -64,6 +64,7 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
       [['U'], 'Fuel pumps on or off'],
       [['I'], 'Start or stop all engines'],
       [['1–4'], 'Start or stop one engine, numbered from the left wing'],
+      [['Shift'], "With 1–4: fire that engine's extinguisher, once it is shut down"],
       [['W', 'S'], 'Throttle up, throttle down'],
       [['F', 'V'], 'Flaps down a notch, up a notch'],
       [['G'], 'Raise or lower the landing gear'],
@@ -74,7 +75,8 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
       [['P'], 'Parking brake'],
       [['L'], 'Landing lights'],
       [['-'], 'Dump fuel to land lighter: 787, A380, Concorde, and F-35A'],
-      [['Enter'], 'Drop a bomb, on the B-2 bombing missions']
+      [['Tab'], 'B-2: open or close the bombsight'],
+      [['Enter'], 'Fire a missile, or in the bombsight drop a bomb. Hold over a city for a string']
     ]
   },
   {
@@ -227,7 +229,7 @@ function Silhouette({ spec }: { spec: AircraftSpec }) {
         ])
       )
     )
-  } else if (shape.type === 'bomber') {
+  } else if (shape.type === 'bomber' || shape.type === 'shuttle') {
     // One flying wing: the right half's outline, then the left half's mirrored back to the nose
     nose = shape.outline[0][1]
     tail = Math.max(...shape.outline.map(([, z]) => z))
@@ -320,7 +322,7 @@ function AircraftPicker({ selected }: { selected: AircraftSpec }) {
   return (
     <fieldset className="mt-5">
       <legend className="sr-only">Aircraft</legend>
-      <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-9">
+      <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6">
         {HANGAR.map(spec => (
           <button
             key={spec.id}
@@ -364,7 +366,7 @@ export function Menu() {
   let summary = CRASH_REASONS[crash ?? 'terrain']
   if (status === 'menu') {
     summary =
-      'Nine real aircraft, nine islands, twelve airports, and other traffic. Fly free, or take on a mission.'
+      'Eleven real aircraft, from a Cessna to the Space Shuttle, nine islands, and twelve airports. Fly free, or take on a mission.'
   } else if (status === 'paused') {
     summary = 'The aircraft holds its position until you resume.'
   } else if (status === 'finished' && result) {

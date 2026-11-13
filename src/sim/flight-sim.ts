@@ -4,6 +4,7 @@ import {
   engineArms,
   GRAVITY,
   KNOT,
+  type PistonEngine,
   ROLLING_FRICTION,
   SEA_LEVEL_DENSITY,
   speedOfSound
@@ -57,6 +58,8 @@ export type EngineState = {
   rpm: number
   /** A failed engine stops and will not restart for the rest of the flight. */
   failed: boolean
+  /** Burning, until the engine is shut down and its fire bottle discharged. */
+  fire: boolean
 }
 
 export type CrashReason =
@@ -75,8 +78,17 @@ export type CrashReason =
 const UP = new Vector3(0, 1, 0)
 const FORWARD = new Vector3(0, 0, -1)
 const RIGHT = new Vector3(1, 0, 0)
-// The airframe breaks up this far past its never-exceed speed
-const BREAKUP_MARGIN = 1.12
+// Past this share of its never-exceed speed the airframe strains, and breaks up after
+// OVERSPEED_STRAIN seconds there. Past the second share it breaks up at once.
+// A ditching holds together below this sink rate in m/s and bank in radians, and below this
+// share of the approach speed. The water then slows the aircraft at this rate per second.
+const DITCH_SINK = 3.5
+const DITCH_BANK = 0.2
+const DITCH_SPEED = 1.35
+const DITCH_DRAG = 0.6
+const STRAIN_MARGIN = 1.08
+const BREAKUP_MARGIN = 1.25
+const OVERSPEED_STRAIN = 8
 // Knots past a flap or gear limit before strain builds, and the strain that breaks them
 const LIMIT_MARGIN = 5
 const STRAIN_LIMIT = 3
@@ -117,6 +129,13 @@ const approach = (value: number, target: number, step: number) =>
 
 export const airDensity = (altitude: number) => SEA_LEVEL_DENSITY * Math.exp(-altitude / 9000)
 
+/**
+ * Share of a piston engine's rated power the air allows: all of it up to the supercharger's
+ * critical altitude, then falling with the density above it.
+ */
+const pistonAir = (engine: PistonEngine, density: number) =>
+  Math.min(1, density / airDensity(engine.criticalAltitude ?? 0))
+
 // Scratch objects, reused every step to avoid allocations
 const qInv = new Quaternion()
 const qStep = new Quaternion()
@@ -129,6 +148,7 @@ const arm = new Vector3()
 const pointVelocity = new Vector3()
 const wheelForward = new Vector3()
 const temp = new Vector3()
+const level = new Quaternion()
 
 /**
  * Six-degree-of-freedom rigid body flight model.
@@ -205,6 +225,7 @@ export class FlightSim {
   // Seconds of strain from overspeed, and of running with the fuel feed off
   private flapStrain = 0
   private gearStrain = 0
+  private overspeedStrain = 0
   private starved = 0
 
   /** True once at least one engine has started. */
@@ -226,6 +247,8 @@ export class FlightSim {
   balancingRudder = 0
   /** True while fuel streams overboard. */
   dumping = false
+  /** Afloat after a gentle touch on the sea. */
+  ditched = false
 
   /**
    * Highest indicated airspeed in m/s allowed here: the never-exceed speed, or lower high up,
@@ -264,7 +287,8 @@ export class FlightSim {
       starting: 0,
       power: 0,
       rpm: 0,
-      failed: false
+      failed: false,
+      fire: false
     }))
   }
 
@@ -275,10 +299,29 @@ export class FlightSim {
     this.enginesRunning = 0
     this.enginePower = 0
     this.position.set(x, this.ground.heightAt(x, z) + this.spec.restHeight, z)
+    this.sitOnTailWheel()
     this.fuel = this.spec.fuelCapacity * DEPARTURE_FUEL
     this.gearPosition = 1
     this.refreshAttitude()
     this.refreshAir()
+  }
+
+  /**
+   * A tail-dragger rests nose-high, on its main wheels and the tail wheel behind them, so it
+   * starts in that attitude instead of dropping onto its tail.
+   */
+  private sitOnTailWheel() {
+    const [tail, main] = this.spec.contactPoints
+    if (!tail || !main || tail.position.z <= main.position.z) return
+    const { y: tailY, z: tailZ } = tail.position
+    const { y: mainY, z: mainZ } = main.position
+    // Nose-up pitch that brings both wheels to the same height
+    const pitch = Math.atan2(tailY - mainY, tailZ - mainZ)
+    level.setFromAxisAngle(RIGHT, pitch)
+    this.orientation.multiply(level)
+    // Lift the body so the main wheels rest where they did when level
+    const dropped = mainY * Math.cos(pitch) - mainZ * Math.sin(pitch)
+    this.position.y += mainY - dropped
   }
 
   /** Starts in level flight with the gear up. Heading is in radians, speed in m/s. */
@@ -363,13 +406,16 @@ export class FlightSim {
     const thin = density / SEA_LEVEL_DENSITY
     if (engine.type === 'piston') {
       const full =
-        (engine.shaftPower * engine.propEfficiency * thin) /
+        (engine.shaftPower * engine.propEfficiency * pistonAir(engine, density)) /
         Math.hypot(speed, engine.staticThrustSpeed)
       return clamp(thrust / full, 0, 1)
     }
+    // An engine with no thrust at all, as on a glider, has no power to set
+    const span = engine.militaryThrust - engine.idleThrust
+    if (span <= 0) return 0
     const lapse = speedFactor(engine.speedLapse, speed / speedOfSound(this.position.y))
     const dry = thrust / (lapse * thin ** 0.7)
-    const share = (dry - engine.idleThrust) / (engine.militaryThrust - engine.idleThrust)
+    const share = (dry - engine.idleThrust) / span
     return clamp(share * engine.afterburnerFrom, 0, engine.afterburnerFrom)
   }
 
@@ -388,6 +434,10 @@ export class FlightSim {
   /** Advances the simulation by `dt` seconds. `wind` is the air mass velocity in m/s. */
   step(dt: number, controls: Controls, wind: Vector3) {
     if (this.crash) return
+    if (this.ditched) {
+      this.float(dt)
+      return
+    }
     const A = this.spec
     this.updateSystems(dt, controls)
 
@@ -587,7 +637,11 @@ export class FlightSim {
     }
     this.rpm = rpm / this.engines.length
     this.refreshAttitude()
-    if (this.indicatedAirspeed > A.neverExceedSpeed * BREAKUP_MARGIN) this.crash = 'overspeed'
+    // Strain builds while far past the never-exceed speed and eases once back below it
+    const over = this.indicatedAirspeed / A.neverExceedSpeed
+    this.overspeedStrain =
+      over > STRAIN_MARGIN ? this.overspeedStrain + dt : Math.max(0, this.overspeedStrain - dt)
+    if (over > BREAKUP_MARGIN || this.overspeedStrain > OVERSPEED_STRAIN) this.crash = 'overspeed'
   }
 
   /** Thrust in newtons at a forward airspeed in m/s if every engine ran like `state`. */
@@ -596,7 +650,7 @@ export class FlightSim {
     const thin = density / SEA_LEVEL_DENSITY
     if (engine.type === 'piston') {
       return (
-        (state.power * engine.shaftPower * engine.propEfficiency * thin) /
+        (state.power * engine.shaftPower * engine.propEfficiency * pistonAir(engine, density)) /
         Math.hypot(forwardSpeed, engine.staticThrustSpeed)
       )
     }
@@ -646,13 +700,16 @@ export class FlightSim {
     for (const engine of this.engines) {
       engine.starting = 0
       engine.failed = false
+      engine.fire = false
     }
+    this.ditched = false
     this.flapsJammed = false
     this.gearJammed = false
     this.flapOverspeed = false
     this.gearOverspeed = false
     this.flapStrain = 0
     this.gearStrain = 0
+    this.overspeedStrain = 0
     this.starved = 0
     this.rollout = false
     this.fuel = this.spec.fuelCapacity
@@ -712,8 +769,9 @@ export class FlightSim {
     let burn = 0
     // Fuel flow follows the thrust the engines deliver: less in thin air, and for jets less
     // as the intake slows down. Jets burn more per newton as the Mach number rises.
-    const thin = airDensity(this.position.y) / SEA_LEVEL_DENSITY
-    let fuelFlow = thin
+    const density = airDensity(this.position.y)
+    const thin = density / SEA_LEVEL_DENSITY
+    let fuelFlow = A.engine.type === 'piston' ? pistonAir(A.engine, density) : thin
     if (A.engine.type === 'jet') {
       const mach = Math.min(1, this.mach)
       fuelFlow = thin ** 0.7 * speedFactor(A.engine.speedLapse, this.mach) * (1 + TSFC_RISE * mach)
@@ -808,8 +866,9 @@ export class FlightSim {
       arm.copy(point.position).applyQuaternion(q).add(this.position)
       const terrain = this.ground.heightAt(arm.x, arm.z)
       if (arm.y >= Math.max(terrain, 0)) continue
-      if (terrain < 0) this.crash = 'water'
-      else this.crash = point.underside && !gearDown ? 'gear-up' : 'terrain'
+      if (terrain < 0) {
+        if (!this.ditch(gearDown)) this.crash = 'water'
+      } else this.crash = point.underside && !gearDown ? 'gear-up' : 'terrain'
       return
     }
 
@@ -836,7 +895,8 @@ export class FlightSim {
       const terrain = this.ground.heightAt(x, z)
       if (terrain < 0) {
         if (y < 0) {
-          this.crash = 'water'
+          // Wheels down dig in and flip the aircraft. A tail bumper can skim a ditching.
+          if (point.gear || !this.ditch(gearDown)) this.crash = 'water'
           return
         }
         continue
@@ -896,6 +956,60 @@ export class FlightSim {
     }
     this.onGround = touching
     if (touching) this.flareTrim = null
+  }
+
+  /**
+   * Discharges an engine's fire bottle. It puts the fire out only once the engine is shut
+   * down, with its fuel cut off. Returns true if the fire went out.
+   */
+  extinguish(index: number, switchedOn: boolean) {
+    const engine = this.engines[index]
+    if (!engine?.fire || switchedOn) return false
+    engine.fire = false
+    return true
+  }
+
+  /**
+   * A touch on the sea: a ditching if it is gentle, with the wheels up, the wings level, and
+   * the nose not down. Returns false for a crash.
+   */
+  private ditch(gearDown: boolean) {
+    const gentle =
+      !gearDown &&
+      -this.velocity.y < DITCH_SINK &&
+      Math.abs(this.bank) < DITCH_BANK &&
+      this.pitch > -0.02 &&
+      this.trueAirspeed < this.spec.approachSpeed * KNOT * DITCH_SPEED
+    if (gentle) {
+      this.ditched = true
+      this.onGround = true
+      this.velocity.y = 0
+      this.angularVelocity.set(0, 0, 0)
+    }
+    return gentle
+  }
+
+  /** Afloat after a ditching: the water slows the aircraft to a stop and it settles level. */
+  private float(dt: number) {
+    const slow = Math.exp(-dt * DITCH_DRAG)
+    this.velocity.x *= slow
+    this.velocity.z *= slow
+    this.velocity.y = 0
+    this.position.addScaledVector(this.velocity, dt)
+    this.position.y = this.spec.restHeight * 0.35
+    // Ease the nose and wings level, keeping the heading
+    level.setFromAxisAngle(UP, -this.heading)
+    this.orientation.slerp(level, 1 - Math.exp(-dt * 1.5))
+    this.trueAirspeed = Math.hypot(this.velocity.x, this.velocity.z)
+    this.indicatedAirspeed = this.trueAirspeed
+    this.altitudeAgl = 0
+    this.stall = 0
+    this.stallWarning = false
+    for (const engine of this.engines) {
+      engine.running = false
+      engine.power = 0
+    }
+    this.refreshAttitude()
   }
 
   private refreshAttitude() {

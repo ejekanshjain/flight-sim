@@ -26,6 +26,7 @@ import {
 } from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { game } from '../game/game'
+import { BLAST_REACH } from '../game/ruins'
 import { heightAt } from '../world/island'
 import { seededRandom } from '../world/noise'
 import {
@@ -138,6 +139,11 @@ export function Villages() {
     roofMesh.frustumCulled = false
     return [wallMesh, roofMesh]
   }, [])
+  const placed = useMemo(
+    () => [[walls, HOUSES, true] as const, [roofs, HOUSES, false] as const],
+    [walls, roofs]
+  )
+  useRuined(placed)
   return (
     <>
       <primitive object={walls} />
@@ -585,6 +591,7 @@ function buildingCylinder() {
 
 const placeMatrix = new Matrix4()
 const placePosition = new Vector3()
+const placeVector = new Vector3()
 const placeScale = new Vector3()
 const placeTurn = new Quaternion()
 
@@ -610,7 +617,86 @@ function instances<T>(
   })
   // Instances spread over the whole map, so the default bounds would cull them wrongly
   mesh.frustumCulled = false
-  return mesh
+  return [mesh, items] as const
+}
+
+/**
+ * Instances, each with the spot of the thing it draws, and whether a falling one throws up
+ * a cloud of dust.
+ */
+type Placed = readonly (readonly [InstancedMesh, readonly { x: number; z: number }[], boolean])[]
+
+// Seconds a building takes to sink into its rubble, and the longest wait before it starts
+const COLLAPSE = 1.6
+const COLLAPSE_DELAY = 0.5
+
+/** One instance on its way down: which part and instance, when it started, and its lean. */
+type Falling = { part: number; index: number; age: number; ground: number; lean: number }
+
+/**
+ * Brings down every instance a bomb blast reached: each sinks into the ground and leans as
+ * it goes, then disappears. All come back when the ruins clear for a new flight.
+ */
+function useRuined(parts: Placed) {
+  const seen = useRef({ generation: -1, craters: 0 })
+  const falling = useRef<Falling[]>([])
+  const saved = useMemo(() => parts.map(([mesh]) => mesh.instanceMatrix.array.slice()), [parts])
+  useFrame((_, delta) => {
+    const { effects } = game
+    const { ruins } = game.bombs
+    const { craters } = ruins
+    const last = seen.current
+    if (last.generation !== ruins.generation) {
+      if (last.craters > 0) {
+        parts.forEach(([mesh], i) => {
+          mesh.instanceMatrix.array.set(saved[i])
+          mesh.instanceMatrix.needsUpdate = true
+        })
+      }
+      falling.current = []
+      seen.current = { generation: ruins.generation, craters: 0 }
+    }
+    const reach = BLAST_REACH * BLAST_REACH
+    for (let c = seen.current.craters; c < craters.length; c++) {
+      const { x, z } = craters[c]
+      parts.forEach(([, items, dust], part) => {
+        items.forEach((item, index) => {
+          if ((item.x - x) ** 2 + (item.z - z) ** 2 > reach) return
+          const ground = heightAt(item.x, item.z)
+          // Nearer the blast, the sooner it goes
+          const near = Math.sqrt(((item.x - x) ** 2 + (item.z - z) ** 2) / reach)
+          const age = -near * COLLAPSE_DELAY
+          falling.current.push({ part, index, age, ground, lean: Math.random() - 0.5 })
+          if (dust) effects.collapse(placeVector.set(item.x, ground, item.z))
+        })
+      })
+    }
+    seen.current.craters = craters.length
+    if (falling.current.length === 0) return
+    falling.current = falling.current.filter(fall => {
+      fall.age += delta
+      const [mesh] = parts[fall.part]
+      const matrices = mesh.instanceMatrix.array
+      const o = fall.index * 16
+      mesh.instanceMatrix.needsUpdate = true
+      const t = Math.min(1, Math.max(0, fall.age / COLLAPSE))
+      if (t >= 1) {
+        // A matrix of zeros draws nothing
+        matrices.fill(0, o, o + 16)
+        return false
+      }
+      // Falls slowly at first, then faster. The height and the lift off the ground shrink
+      // together, and the top leans over to one side as it goes.
+      const k = 1 - t * t
+      const original = saved[fall.part]
+      for (let n = 0; n < 16; n++) matrices[o + n] = original[o + n]
+      matrices[o + 4] = original[o + 4] * k + fall.lean * (1 - k) * original[o + 5] * 0.4
+      matrices[o + 5] = original[o + 5] * k
+      matrices[o + 6] = original[o + 6] * k + fall.lean * (1 - k) * original[o + 5] * 0.3
+      matrices[o + 13] = fall.ground + (original[o + 13] - fall.ground) * k
+      return true
+    })
+  })
 }
 
 /** Streets, pavements, parks, and the central plaza of one city, seen from above. */
@@ -772,12 +858,21 @@ export function Cities() {
       },
       () => PARK_GREENS[Math.floor(random() * PARK_GREENS.length)]
     )
-    return [concrete, glass, round, spires, crowns, trees]
+    // Buildings throw up dust as they fall. Spires, crowns, and trees go down with them.
+    return [
+      [...concrete, true],
+      [...glass, true],
+      [...round, true],
+      [...spires, false],
+      [...crowns, false],
+      [...trees, false]
+    ] as const
   }, [])
+  useRuined(meshes)
   const streets = useMemo(() => CITY_PLANS.map(streetTexture), [])
   return (
     <>
-      {meshes.map(mesh => (
+      {meshes.map(([mesh]) => (
         <primitive key={mesh.uuid} object={mesh} />
       ))}
       {CITY_PLANS.map(({ city }, i) => (

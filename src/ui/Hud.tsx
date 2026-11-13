@@ -16,7 +16,7 @@ import {
 import { EngineDisplay, HeadUpDisplay, NavigationDisplay, PrimaryFlightDisplay } from './Glass'
 import { ApproachCard, BankIndicator, GpwsAlert } from './Guidance'
 import { MiniMap } from './MiniMap'
-import { CoachCard, MissionCard } from './Missions'
+import { BombPanel, CoachCard, MissionCard } from './Missions'
 import { flightModes } from './modes'
 import { FEET_PER_METRE, FPM_PER_MS, KNOTS_PER_MS, setText, useTelemetry } from './telemetry'
 
@@ -93,6 +93,7 @@ type Lamp = {
 
 const LAMPS: Lamp[] = [
   { label: 'STALL', kind: 'warning', on: sim => sim.stallWarning },
+  { label: 'ENGINE FIRE', kind: 'warning', on: sim => sim.engines.some(engine => engine.fire) },
   {
     // Low, slow, throttled back, and the wheels are still up
     label: 'GEAR UP',
@@ -301,6 +302,7 @@ function Readouts() {
   const climb = useRef<HTMLSpanElement>(null)
   const targets = useRef<HTMLDivElement>(null)
   const groundSpeed = useRef<HTMLSpanElement>(null)
+  const mach = useRef<HTMLSpanElement>(null)
   const height = useRef<HTMLSpanElement>(null)
   const load = useRef<HTMLSpanElement>(null)
   const wind = useRef<HTMLSpanElement>(null)
@@ -327,6 +329,7 @@ function Readouts() {
       ]
       setText(targets.current, modes.filter(Boolean).join('  ·  '))
       setText(groundSpeed.current, `${Math.round(sim.groundSpeed * KNOTS_PER_MS)} kt`)
+      setText(mach.current, sim.mach.toFixed(2))
       const feet = Math.max(0, sim.altitudeAgl - sim.spec.restHeight) * FEET_PER_METRE
       setText(height.current, `${Math.round(feet / 10) * 10} ft`)
       setText(load.current, `${sim.gLoad.toFixed(1)} g`)
@@ -367,6 +370,7 @@ function Readouts() {
             [
               ['Ground speed', groundSpeed],
               ['Above ground', height],
+              ['Mach', mach],
               ['Load', load],
               ['Wind', wind],
               ['Frame rate', frames]
@@ -502,6 +506,10 @@ function switches(sim: FlightSim, controls: Controls) {
     gearJammed: sim.gearJammed,
     flapOverspeed: sim.flapOverspeed,
     gearOverspeed: sim.gearOverspeed,
+    overspeed: sim.indicatedAirspeed > sim.speedLimit,
+    // One digit per engine, such as '10' while engine 1 burns
+    fires: sim.engines.map(engine => (engine.fire ? 1 : 0)).join(''),
+    ditched: sim.ditched,
     modes: autopilot.on ? `${autopilot.lateral} ${autopilot.vertical}` : '',
     leg: game.nav.leg,
     approach: game.nav.approach?.id ?? '',
@@ -831,6 +839,24 @@ function Notices({ spec }: { spec: AircraftSpec }) {
           notice = 'Flaps jammed: they were out too fast'
         } else if (now.gearJammed && !was.gearJammed) {
           notice = 'Gear damaged: it is stuck down'
+        } else if (now.fires !== was.fires) {
+          const lit = [...now.fires].flatMap((fire, i) =>
+            fire === '1' && was.fires[i] !== '1' ? [i + 1] : []
+          )
+          const out = [...was.fires].flatMap((fire, i) =>
+            fire === '1' && now.fires[i] !== '1' ? [i + 1] : []
+          )
+          if (lit.length > 1) notice = `Fire in engines ${lit.join(' and ')}`
+          else if (lit.length === 1) notice = `Engine ${lit[0]} fire`
+          else if (out.length > 0) notice = `Engine ${out.join(' and ')} fire out`
+        } else if (now.ditched && !was.ditched) {
+          notice = 'Ditched: the aircraft is afloat'
+        } else if (now.overspeed && !was.overspeed) {
+          // High up the Mach limit comes first. Low down, thick air strains the airframe.
+          notice =
+            sim.speedLimit < spec.neverExceedSpeed
+              ? 'Overspeed: past the Mach limit. Throttle back'
+              : 'Overspeed: throttle back or climb. The airframe breaks if you stay this fast'
         } else if (now.flapOverspeed && !was.flapOverspeed) {
           notice = 'Too fast for these flaps: slow down or raise them'
         } else if (now.gearOverspeed && !was.gearOverspeed) {
@@ -913,6 +939,7 @@ export function Hud() {
   const spec = useGame(state => state.flown)
   const camera = useGame(state => state.camera)
   const mission = useGame(state => state.mission)
+  const bombsight = useGame(state => state.bombsight)
   const scale = usePanelScale()
   return (
     <div
@@ -923,13 +950,19 @@ export function Hud() {
       {/* Readouts, the bank arc, and notices stack down the middle so none covers another */}
       <div className="absolute top-0 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1">
         <Readouts />
-        {camera === 'chase' && <BankIndicator />}
+        {camera === 'chase' && !bombsight && <BankIndicator />}
         <GpwsAlert />
         <Notices spec={spec} />
       </div>
       {/* Steps and coaching sit to the left, clear of the view ahead */}
       <div className="absolute top-4 left-4 flex flex-col gap-2">
         {mission ? <MissionCard mission={mission} /> : <Checklists spec={spec} />}
+        {!mission && spec.bombBay && (
+          <div className="bg-paper/95 text-ink w-80 rounded-md px-4 py-3 text-sm shadow-lg">
+            <h2 className="text-base font-bold">Bomb Bay</h2>
+            <BombPanel total={spec.bombBay} />
+          </div>
+        )}
         <CoachCard />
       </div>
       {/* The enlarged map drops below the top bar, with the approach card beside it */}

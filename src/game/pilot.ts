@@ -1,4 +1,4 @@
-import { type AircraftSpec, KNOT, tailStrikePitch } from '../sim/aircraft'
+import { type AircraftSpec, isGlider, KNOT, tailStrikePitch } from '../sim/aircraft'
 import type { Controls, FlightSim } from '../sim/flight-sim'
 import type { Approach } from '../world/approaches'
 import { heightAt } from '../world/island'
@@ -183,8 +183,11 @@ export class Pilot {
       if (code === 'KeyF' && lever) {
         c.flapNotch = Math.min(sim.spec.flapLabels.length - 1, c.flapNotch + 1)
       } else if (code === 'KeyV' && lever) c.flapNotch = Math.max(0, c.flapNotch - 1)
-      else if (code === 'KeyG') c.gearDown = !c.gearDown || !sim.spec.retractableGear
-      else if (code === 'KeyB') c.speedBrake = !c.speedBrake
+      else if (code === 'KeyG') {
+        // The Shuttle's gear falls by gravity and locks: once down it stays down
+        const locked = c.gearDown && isGlider(sim.spec)
+        c.gearDown = !c.gearDown || !sim.spec.retractableGear || locked
+      } else if (code === 'KeyB') c.speedBrake = !c.speedBrake
       else if (code === 'KeyR') c.reverse = !c.reverse
       else if (code === 'KeyP') c.parkingBrake = !c.parkingBrake
       else if (code === 'Minus') c.fuelDump = !c.fuelDump
@@ -196,7 +199,11 @@ export class Pilot {
         c.engineSwitches.fill(!switches.every(Boolean))
       } else if (ENGINE_KEYS.includes(code)) {
         const engine = ENGINE_KEYS.indexOf(code)
-        if (engine < sim.engines.length) c.engineSwitches[engine] = !c.engineSwitches[engine]
+        // With Shift, the key discharges that engine's fire bottle instead
+        if (engine < sim.engines.length) {
+          if (shift) sim.extinguish(engine, c.engineSwitches[engine])
+          else c.engineSwitches[engine] = !c.engineSwitches[engine]
+        }
       } else if (code === 'KeyL') this.landingLights = !this.landingLights
       else if (code === 'KeyZ') this.engage(!this.autopilot.on, sim)
       else if (code === 'KeyX') this.toggleAutothrottle(sim)
@@ -383,8 +390,16 @@ export class Pilot {
     } else if (autopilot.on && pedals === 0) {
       // Yaw damper: the autopilot sets the rudder that balances uneven engines, as after an
       // engine failure, and works it to centre the slip ball
-      this.rudderHold = clamp(this.rudderHold + sim.slip * YAW_TRIM * dt, -1, 1)
-      c.yaw = clamp(sim.balancingRudder + this.rudderHold + sim.slip * YAW_DAMPER, -1, 1)
+      // Both the slip it feels and the rudder's bite grow as the airspeed squared, so above
+      // manoeuvring speed the damper eases off. The thin air up high damps a swing less, so
+      // there it eases off too, and past Mach 1 the airframe holds itself straight. Without
+      // this the damper swings the tail side to side at speed or height.
+      const thin = sim.indicatedAirspeed / Math.max(sim.trueAirspeed, 1)
+      const supersonic = Math.min(1, Math.max(0, (sim.mach - 0.9) / 0.2))
+      const fast = Math.min(1, (spec.maneuverSpeed / Math.max(airspeed, 1)) ** 4)
+      const bite = fast * thin * thin * (1 - supersonic)
+      this.rudderHold = clamp(this.rudderHold + sim.slip * YAW_TRIM * bite * dt, -1, 1)
+      c.yaw = clamp(sim.balancingRudder + this.rudderHold + sim.slip * YAW_DAMPER * bite, -1, 1)
     } else {
       c.yaw = this.deflect(c.yaw, pedals * fine, dt, DEFLECT_RATE, 'KeyD', 'KeyA')
       this.rudderHold = 0

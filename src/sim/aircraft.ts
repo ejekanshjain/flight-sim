@@ -35,6 +35,11 @@ export type PistonEngine = {
   propYawFadeSpeed: number
   idleRpm: number
   maxRpm: number
+  /**
+   * Height in metres up to which a supercharger keeps full power. Above it power falls with
+   * the air. Without one, power falls from sea level.
+   */
+  criticalAltitude?: number
 }
 
 export type JetEngine = {
@@ -111,6 +116,8 @@ export type AirlinerShape = {
 export type Shape =
   | {
       type: 'propeller'
+      /** The P-51 has its own model: a tail-dragger with a belly scoop and a bubble canopy. */
+      variant?: 'mustang'
       noseZ: number
       tailZ: number
       cabinRadius: number
@@ -127,6 +134,18 @@ export type Shape =
   | { type: 'fighter'; variant: 'f16' | 'f35'; paint: string; accent: string }
   | BomberShape
   | AirlinerShape
+  | ShuttleShape
+
+/**
+ * The Space Shuttle orbiter. The outline runs from the nose around the right side of the
+ * double-delta wing to the tail, as (x, z) pairs, the same way as the bomber's.
+ */
+export type ShuttleShape = {
+  type: 'shuttle'
+  outline: [number, number][]
+  paint: string
+  accent: string
+}
 
 /**
  * A flying wing with no fuselage or tail. The outline runs from the nose to the right
@@ -226,6 +245,8 @@ export type AircraftSpec = {
   fuelCapacity: number
   /** True for aircraft that can pump fuel overboard to land lighter. */
   fuelDump: boolean
+  /** Bombs carried in free flight, for bombers. */
+  bombBay?: number
   fuelBurnIdle: number
   fuelBurnFull: number
   /** Unit shown on the fuel gauge, and how many of them make one kilogram. */
@@ -340,6 +361,12 @@ export function tailStrikePitch(spec: AircraftSpec) {
     lowest = Math.min(lowest, Math.atan2(position.y - main.position.y, behind))
   }
   return lowest
+}
+
+/** Stiffness and damping of a gear leg that sags `sag` metres under `load` newtons. */
+function spring(load: number, sag: number) {
+  const stiffness = load / sag
+  return [stiffness, 1.1 * Math.sqrt((stiffness * load) / GRAVITY)] as const
 }
 
 const part = (x: number, y: number, z: number, radius: number) => ({
@@ -556,10 +583,6 @@ function airliner(plan: AirlinerPlan): AircraftSpec {
   const tipY = shape.wing.y + halfSpan * Math.sin(shape.wing.dihedral)
   // Share of the weight on the nose wheel when parked
   const noseShare = gear.mainZ / (gear.mainZ - gear.noseZ)
-  const spring = (load: number, sag: number) => {
-    const stiffness = load / sag
-    return [stiffness, 1.1 * Math.sqrt((stiffness * load) / GRAVITY)] as const
-  }
   // The nose strut is stiff enough to take the extra load of full braking and the nose
   // coming down after touchdown
   const [noseSpring, noseDamper] = spring(weight * noseShare, 0.08)
@@ -967,10 +990,6 @@ function concorde(): AircraftSpec {
   const weight = mass * GRAVITY
   const gear = { y: 5.4, noseZ: -16, mainX: 3.85, mainZ: 8 }
   const noseShare = gear.mainZ / (gear.mainZ - gear.noseZ)
-  const spring = (load: number, sag: number) => {
-    const stiffness = load / sag
-    return [stiffness, 1.1 * Math.sqrt((stiffness * load) / GRAVITY)] as const
-  }
   // The nose strut is stiff enough to take the extra load of full braking and the nose
   // coming down after touchdown
   const [noseSpring, noseDamper] = spring(weight * noseShare, 0.08)
@@ -1177,10 +1196,6 @@ function b2(): AircraftSpec {
   const weight = mass * GRAVITY
   const gear = { y: 3.2, noseZ: -6, mainX: 6, mainZ: 1 }
   const noseShare = gear.mainZ / (gear.mainZ - gear.noseZ)
-  const spring = (load: number, sag: number) => {
-    const stiffness = load / sag
-    return [stiffness, 1.1 * Math.sqrt((stiffness * load) / GRAVITY)] as const
-  }
   const [noseSpring, noseDamper] = spring(weight * noseShare, 0.08)
   const [mainSpring, mainDamper] = spring((weight * (1 - noseShare)) / 2, 0.22)
   const halfSpan = 26.2
@@ -1288,6 +1303,8 @@ function b2(): AircraftSpec {
     starterSeconds: 5,
     fuelCapacity: 75_750,
     fuelDump: false,
+    // Eighty 500 lb bombs, the B-2's full load of the smallest kind
+    bombBay: 80,
     // About 0.6 kg of fuel per newton of thrust each hour at full power
     fuelBurnIdle: 0.3,
     fuelBurnFull: 5.2,
@@ -1638,9 +1655,465 @@ const F35: AircraftSpec = {
   shape: { type: 'fighter', variant: 'f35', paint: '#6f767d', accent: '#4c5359' }
 }
 
+/**
+ * P-51D Mustang, from its published figures: 11.28 m span, 21.65 m² of wing, 9.83 m long,
+ * 4,173 kg loaded with 269 US gal of fuel, a 1,490 hp Packard Merlin V-1650-7 at 3,000 rpm
+ * turning a 3.4 m four-blade propeller, stalling at 102 mph clean and 95 mph with gear and
+ * flaps down at 9,000 lb. NASA SP-468 gives a zero-lift drag coefficient of 0.0163 and a
+ * best lift-to-drag ratio of 14.6. A tail-dragger: it sits nose-high on its tail wheel.
+ */
+function mustang(): AircraftSpec {
+  // 269 US gal of avgas weighs 733 kg; the listed mass keeps 30% of it
+  const fuelCapacity = 733
+  const mass = 4173 - fuelCapacity * 0.7
+  const weight = mass * GRAVITY
+  // The tail wheel sits high enough in body axes that the aircraft parks 11.5° nose-up
+  const main = { x: 1.8, y: -1.95, z: -0.55 }
+  const tail = { y: -0.82, z: 5.05 }
+  // At that attitude the centre of gravity is 0.93 m behind the main wheels and the tail
+  // wheel 5.7 m behind them, so the tail wheel carries 16% of the weight
+  const tailShare = 0.16
+  const [mainSpring, mainDamper] = spring((weight * (1 - tailShare)) / 2, 0.1)
+  const [tailSpring, tailDamper] = spring(weight * tailShare, 0.06)
+  const halfSpan = 5.64
+  const tipY = -0.55 + halfSpan * Math.sin(0.087)
+  return {
+    id: 'p51',
+    name: 'P-51D Mustang',
+    label: 'P-51D',
+    role: 'Piston fighter',
+    description:
+      'A 1,490 hp Merlin on a tail-dragger. Hold right rudder as the power comes up, raise the tail before it flies, and go easy on the brakes.',
+    stats: { power: '1,490 hp', topSpeed: 380, stallSpeed: 87, climb: 3200 },
+
+    mass,
+    // From the parts' masses and distances: the engine and propeller far forward, the guns
+    // and their ammunition out in the wings
+    inertiaPitch: 12_000,
+    inertiaYaw: 16_500,
+    inertiaRoll: 5500,
+    wingArea: 21.65,
+    wingSpan: halfSpan * 2,
+    // Mean aerodynamic chord of a 2.6 m root tapering to a 1.25 m tip
+    chord: 2,
+
+    // Lift slope of an unswept wing of aspect ratio 5.9 with the fuselage. The wing sits
+    // about 1° up on the thrust line. Clean it stalls near CL 1.45, which is the manual's
+    // 102 mph at 9,000 lb; the flaps add the little the manual shows for 95 mph.
+    cl0: 0.15,
+    clAlpha: 4.5,
+    flapLift: 0.35,
+    stallAlpha: 0.29,
+    negativeStallAlpha: 0.2,
+    flapStallShift: 0.03,
+    // The laminar-flow wing stalls abruptly, with little buffet first
+    stallSharpness: 45,
+    stallHysteresis: 0.08,
+    stallWarningMargin: 0.05,
+
+    // With an efficiency of 0.75, this drag gives NASA's best lift-to-drag ratio of 14.6
+    cd0: 0.0163,
+    gearDrag: 0.016,
+    flapDrag: 0.07,
+    inducedDrag: 0.072,
+    sideDrag: 0.6,
+    sideForce: -0.6,
+    // The thin laminar wing meets shock waves from about Mach 0.7
+    dragRiseMach: 0.7,
+    waveDrag: 0.05,
+    speedBrakeDrag: 0,
+    liftDump: 0,
+
+    // About 10% static margin with the fuselage tank low, trimmed hands-off near 250 kt.
+    // The elevator and the 3.8 m² tail, 5.3 m behind the wing, give the pitch damping and
+    // authority.
+    cm0: 0.01,
+    cmAlpha: -0.6,
+    cmPitchRate: -11,
+    cmElevator: 0.3,
+    cmTrim: 0.12,
+    cmStall: -0.05,
+
+    // A full aileron roll of about 100°/s at 300 mph, from NACA's measured pb/2V of 0.075
+    clBeta: -0.06,
+    clRollRate: -0.45,
+    clYawRate: 0.05,
+    clAileron: 0.034,
+    // Engine torque drops the left wing hard at the stall
+    stallRollBias: 0.02,
+
+    cnBeta: 0.1,
+    cnYawRate: -0.14,
+    cnRollRate: -0.02,
+    cnRudder: 0.04,
+    cnAileron: -0.006,
+
+    // Military power at sea level. Ideal momentum theory gives the 3.4 m propeller about
+    // 21 kN of static thrust at 85% efficiency, hence the 45 m/s cap. Torque and P-factor
+    // swing the nose left: on the takeoff roll at 50 kt they take two thirds of the rudder.
+    engine: {
+      type: 'piston',
+      shaftPower: 1_111_000,
+      propEfficiency: 0.85,
+      staticThrustSpeed: 45,
+      idlePower: 0.05,
+      propYawArm: 0.34,
+      propYawFadeSpeed: 70,
+      idleRpm: 650,
+      maxRpm: 3000,
+      // The Merlin's two-stage supercharger holds full power to about 20,700 ft in high
+      // blower, which is why the top speed comes up high
+      criticalAltitude: 6300
+    },
+    engineCount: 1,
+    spoolSeconds: 0.5,
+    starterSeconds: 3,
+    fuelCapacity,
+    fuelDump: false,
+    // The Merlin burns about 150 US gal an hour at military power and 8 at idle
+    fuelBurnIdle: 0.006,
+    fuelBurnFull: 0.113,
+    fuelUnit: { label: 'gal', perKg: 1 / (3.785 * 0.72) },
+
+    flapLabels: ['Up', '15°', '30°', '50°'],
+    flapName: 'Flaps',
+    // Flaps 165 mph and gear 170 mph, from the pilot's manual
+    flapSpeeds: [143, 143, 143],
+    gearSpeed: 148,
+    flapSecondsPerNotch: 3,
+    retractableGear: true,
+    gearSeconds: 8,
+    reverseThrust: 0,
+    flyByWire: null,
+    autobrake: false,
+
+    // Where a full pull reaches the stall and the +8 g limit together
+    maneuverSpeed: 122,
+    // The 505 mph dive limit, and the Mach 0.8 where compressibility takes the controls away
+    neverExceedSpeed: 439 * KNOT,
+    maxMach: 0.8,
+    maxTouchdownSink: 5,
+    gearTravel: 0.4,
+    // Hard braking with the tail up stands it on its nose
+    brakeFriction: 0.45,
+    sideFriction: 0.8,
+    maxSteerAngle: 0,
+
+    contactPoints: [
+      // The tail wheel locks straight; differential brakes and the rudder steer
+      {
+        position: new Vector3(0, tail.y, tail.z),
+        stiffness: tailSpring,
+        damping: tailDamper,
+        gear: true,
+        braked: false,
+        steered: false,
+        scrape: 0
+      },
+      wheel(-main.x, main.y, main.z, mainSpring, mainDamper, 'main'),
+      wheel(main.x, main.y, main.z, mainSpring, mainDamper, 'main')
+    ],
+    hullPoints: [
+      // The lower propeller tip clears the runway by about 30 cm with the tail up
+      hull(0, -1.65, -3.45, true),
+      hull(0, -1.1, 0.8, true),
+      hull(-halfSpan, tipY, 0.45),
+      hull(halfSpan, tipY, 0.45),
+      hull(0, 1.55, 5.6),
+      hull(0, 1.05, 0.4),
+      hull(0, -0.35, 5.8, true)
+    ],
+    restHeight: 1.7,
+    wingtips: [new Vector3(-halfSpan, tipY, 0.45), new Vector3(halfSpan, tipY, 0.45)],
+    breakup: [
+      part(0, -0.1, 0.8, 0.7),
+      part(0, 0, -2.6, 0.5),
+      part(-2.9, -0.35, 0.4, 0.4),
+      part(2.9, -0.35, 0.4, 0.4),
+      part(0, 0.3, 5.2, 0.5)
+    ],
+
+    // Lifts off near 110 mph, climbs at 170 mph, and flies its final turn at 120 mph
+    rotateSpeed: 95,
+    climbSpeed: 150,
+    approachSpeed: 105,
+    cruiseSpeed: 130,
+    runwayNeeded: 900,
+    gauges: {
+      airspeed: {
+        min: 40,
+        max: 500,
+        labelEvery: 50,
+        tickEvery: 10,
+        flapRange: [80, 143],
+        normalRange: [87, 350],
+        cautionRange: [350, 439]
+      },
+      climb: 4000,
+      power: {
+        caption: 'RPM × 100',
+        max: 3500,
+        labelEvery: 500,
+        tickEvery: 100,
+        labelScale: 100,
+        normalRange: [1600, 2700],
+        redline: 3000
+      }
+    },
+    panel: 'dials',
+    camera: { distance: 16, height: 4.2, eye: new Vector3(0, 0.82, 0.55) },
+    shape: {
+      type: 'propeller',
+      variant: 'mustang',
+      noseZ: -3.85,
+      tailZ: 5.98,
+      cabinRadius: 0.5,
+      wingY: -0.55,
+      dihedral: 0.087,
+      highWing: false,
+      tailSpan: 4.1,
+      finHeight: 1.5,
+      propRadius: 1.7,
+      // Natural metal with a red spinner
+      paint: '#c9ced3',
+      accent: '#b5262b'
+    }
+  }
+}
+
+const P51 = mustang()
+
+/**
+ * The Space Shuttle orbiter on its return, from NASA's figures: 37.24 m long, 23.79 m span,
+ * 249.9 m² of wing with a 12.06 m mean chord, about 100 t at landing, and a subsonic
+ * lift-to-drag ratio of 4.5. It glides all the way down: an outer glideslope of 18-20° at
+ * 300 KEAS, a preflare at 2,000 ft onto a 1.5° inner glideslope, the gear at 300 ft, and
+ * touchdown near 195 KEAS. Its "engine" stands for the three hydrazine APUs that power
+ * the hydraulics: they start, run, and use fuel, but give no thrust.
+ */
+function shuttle(): AircraftSpec {
+  const mass = 100_000
+  const weight = mass * GRAVITY
+  const gear = { y: 4, noseZ: -16.5, mainX: 3.45, mainZ: 6 }
+  const noseShare = gear.mainZ / (gear.mainZ - gear.noseZ)
+  const [noseSpring, noseDamper] = spring(weight * noseShare, 0.08)
+  const [mainSpring, mainDamper] = spring((weight * (1 - noseShare)) / 2, 0.2)
+  const halfSpan = 11.9
+  // The 81° glove meets the 45° main wing a third of the way out; the trailing edge is
+  // nearly straight across the elevons
+  const shape: ShuttleShape = {
+    type: 'shuttle',
+    outline: [
+      [0, -21.6],
+      [1.6, -19.8],
+      [2.5, -16.5],
+      [2.6, -7.9],
+      [4.5, 4.1],
+      [halfSpan, 11.5],
+      [halfSpan, 13.9],
+      [2.9, 14.8],
+      [2.9, 15.6],
+      [0, 15.6]
+    ],
+    paint: '#f1f0ec',
+    accent: '#22262b'
+  }
+  return {
+    id: 'shuttle',
+    name: 'Space Shuttle Orbiter',
+    label: 'Shuttle',
+    role: 'Unpowered orbital glider',
+    description:
+      'No engines on the way home: one try at the runway. Dive steeply at 300 kt with the speed brake, flare at 2,000 ft, and drop the gear at 300 ft.',
+    stats: { power: 'None: a glider', topSpeed: 333, stallSpeed: 147, climb: 0 },
+
+    mass,
+    // About 0.9, 6.5, and 6.8 million slug ft² near landing weight: long and heavy at both
+    // ends, so slow to pitch and yaw, quick to roll
+    inertiaPitch: 8_700_000,
+    inertiaYaw: 9_100_000,
+    inertiaRoll: 1_200_000,
+    wingArea: 249.9,
+    wingSpan: halfSpan * 2,
+    chord: 12.06,
+
+    // A delta of aspect ratio 2.27 has a lift slope near 2.9 per radian. That puts the
+    // 195 KEAS touchdown at 11° angle of attack, below the 14° that scrapes the body flap.
+    // Vortex lift carries it to about CL 1.1 at 20°.
+    cl0: 0.08,
+    clAlpha: 2.9,
+    flapLift: 0,
+    stallAlpha: 0.35,
+    negativeStallAlpha: 0.25,
+    flapStallShift: 0,
+    stallSharpness: 25,
+    stallHysteresis: 0.06,
+    stallWarningMargin: 0.06,
+
+    // A blunt base and a delta that keeps little leading-edge suction: these give the best
+    // lift-to-drag ratio of 4.5 near 250 KEAS, and a 14° glide at 300 KEAS
+    cd0: 0.044,
+    gearDrag: 0.018,
+    flapDrag: 0,
+    inducedDrag: 0.28,
+    sideDrag: 0.4,
+    sideForce: -0.5,
+    // Transonic drag rise halves the lift-to-drag ratio by Mach 1
+    dragRiseMach: 0.8,
+    waveDrag: 0.06,
+    // The split rudder opens as a speed brake: fully open it steepens the 300 KEAS glide to
+    // 23°. The real one was held part open to stay on the 18-20° outer glideslope.
+    speedBrakeDrag: 0.045,
+    liftDump: 0,
+
+    // Barely stable in pitch, with the digital fly-by-wire flying the elevons and body flap
+    cm0: 0.02,
+    cmAlpha: -0.2,
+    cmPitchRate: -4,
+    cmElevator: 0.16,
+    cmTrim: 0.2,
+    cmStall: -0.04,
+
+    // The elevons roll it at about 35°/s at approach speed
+    clBeta: -0.06,
+    clRollRate: -0.3,
+    clYawRate: 0.05,
+    clAileron: 0.015,
+    stallRollBias: 0.004,
+
+    cnBeta: 0.1,
+    cnYawRate: -0.2,
+    cnRollRate: -0.01,
+    cnRudder: 0.03,
+    cnAileron: -0.004,
+
+    // No thrust at any throttle setting. Idle sits 1 N below zero so the sim's throttle
+    // solver, which divides by the span from idle to full thrust, never divides by zero.
+    engine: {
+      type: 'jet',
+      idleThrust: -1,
+      militaryThrust: 0,
+      afterburnerThrust: 0,
+      afterburnerFrom: 1,
+      speedLapse: 0
+    },
+    engineCount: 1,
+    spoolSeconds: 1,
+    starterSeconds: 5,
+    // Three APUs with 159 kg of hydrazine each, burning about 1 kg a minute each, shown
+    // in percent of full tanks
+    fuelCapacity: 477,
+    fuelDump: false,
+    fuelBurnIdle: 0.05,
+    fuelBurnFull: 0.05,
+    fuelUnit: { label: '%', perKg: 100 / 477 },
+
+    flapLabels: ['Up'],
+    flapName: 'Flaps',
+    flapSpeeds: [],
+    gearSpeed: 300,
+    flapSecondsPerNotch: 1,
+    retractableGear: true,
+    gearSeconds: 6,
+    reverseThrust: 0,
+    flyByWire: { alphaMargin: 0.08, maxBank: Number.POSITIVE_INFINITY },
+    // The speed brake opens by itself at touchdown, then the brakes come on. The real
+    // orbiter also streamed a drag chute, which this cannot model.
+    autobrake: true,
+
+    // Where a full pull reaches the stall and the +2.5 g limit together
+    maneuverSpeed: 120,
+    // About the 375 lb/ft² dynamic pressure limit for the approach
+    neverExceedSpeed: 333 * KNOT,
+    maxTouchdownSink: 3,
+    gearTravel: 0.45,
+    brakeFriction: 0.4,
+    sideFriction: 0.8,
+    maxSteerAngle: 0.17,
+
+    contactPoints: [
+      wheel(0, -gear.y, gear.noseZ, noseSpring, noseDamper, 'nose'),
+      wheel(-gear.mainX, -gear.y, gear.mainZ, mainSpring, mainDamper, 'main'),
+      wheel(gear.mainX, -gear.y, gear.mainZ, mainSpring, mainDamper, 'main'),
+      // The body flap scrapes first on an over-rotation
+      skid(-1.6, 15.6, mainSpring)
+    ],
+    hullPoints: [
+      hull(0, -1, -21.2, true),
+      hull(0, -1.95, 0, true),
+      hull(-halfSpan, -1.55, 12.7),
+      hull(halfSpan, -1.55, 12.7),
+      hull(0, 13.5, 14.5),
+      hull(0, 2.6, -14),
+      hull(-6, -1.6, 14.5, true),
+      hull(6, -1.6, 14.5, true)
+    ],
+    restHeight: gear.y - 0.2,
+    wingtips: [new Vector3(-halfSpan, -1.55, 12.7), new Vector3(halfSpan, -1.55, 12.7)],
+    breakup: [
+      part(0, 0, 2, 2.5),
+      part(0, 0.5, -17, 2),
+      part(-7, -1.6, 8, 2),
+      part(7, -1.6, 8, 2),
+      part(0, 7, 12, 2)
+    ],
+
+    // Touchdown speed, the outer glideslope speed, and a start in the air at 290 KEAS low down
+    rotateSpeed: 195,
+    climbSpeed: 300,
+    approachSpeed: 290,
+    cruiseSpeed: 150,
+    // Rollouts ran 2,400-3,000 m
+    runwayNeeded: 3500,
+    gauges: {
+      airspeed: {
+        min: 0,
+        max: 400,
+        labelEvery: 50,
+        tickEvery: 10,
+        flapRange: null,
+        normalRange: [185, 300],
+        cautionRange: [300, 333]
+      },
+      climb: 12_000,
+      power: {
+        caption: 'APU %',
+        max: 110,
+        labelEvery: 20,
+        tickEvery: 5,
+        labelScale: 1,
+        normalRange: [60, 100],
+        redline: 104
+      }
+    },
+    // The commander flew the approach on the head-up display
+    panel: 'hud',
+    camera: { distance: 70, height: 18, eye: new Vector3(-0.6, 1.9, -16.3) },
+    shape
+  }
+}
+
+const SHUTTLE = shuttle()
+
 /** Every aircraft the player can fly, in picker order. */
-export const HANGAR: AircraftSpec[] = [CESSNA, A320, B737, B787, A380, CONCORDE, F16, F35, B2]
+export const HANGAR: AircraftSpec[] = [
+  CESSNA,
+  P51,
+  A320,
+  B737,
+  B787,
+  A380,
+  CONCORDE,
+  F16,
+  F35,
+  B2,
+  SHUTTLE
+]
 export const DEFAULT_AIRCRAFT = CESSNA
+
+/** True for aircraft with no thrust at all, such as the Shuttle orbiter, which only glide. */
+export const isGlider = (spec: AircraftSpec) =>
+  spec.engine.type === 'jet' && spec.engine.militaryThrust <= 0
 
 /** Distance of each engine from the centreline, numbered from the left wingtip. */
 export function engineArms(spec: AircraftSpec) {

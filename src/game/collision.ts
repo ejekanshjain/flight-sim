@@ -10,6 +10,7 @@ import {
   SHIP,
   TALLEST_OBSTACLE
 } from '../world/scenery'
+import type { Ruins } from './ruins'
 import type { Traffic } from './traffic'
 
 // Fixed obstacles are bucketed into square cells this many metres wide
@@ -59,7 +60,12 @@ function insideCylinder(x: number, z: number, base: number, top: number, radius:
  * Returns what the aircraft has flown into, or null.
  * `time` is the scenery clock in seconds, which positions the balloons and boats.
  */
-export function findCollision(sim: FlightSim, time: number, traffic: Traffic): CrashReason | null {
+export function findCollision(
+  sim: FlightSim,
+  time: number,
+  traffic: Traffic,
+  ruins?: Ruins
+): CrashReason | null {
   const { position } = sim
   const reach = sim.spec.wingSpan
 
@@ -100,6 +106,9 @@ export function findCollision(sim: FlightSim, time: number, traffic: Traffic): C
         const bucket = grid.get(cellKey(point.x + dx, point.z + dz))
         if (!bucket) continue
         for (const obstacle of bucket) {
+          // A building a bomb brought down is rubble now. Its widest blocks reach past
+          // their centre, so the flattened area counts a little wider.
+          if (obstacle.kind === 'building' && ruins?.covers(obstacle.x, obstacle.z, 40)) continue
           if (
             insideCylinder(obstacle.x, obstacle.z, obstacle.base, obstacle.top, obstacle.radius)
           ) {

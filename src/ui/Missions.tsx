@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useRef, useState } from 'react'
-import { bombAdvice } from '../game/bombs'
+import { bombAdvice, missileAdvice } from '../game/bombs'
 import { type Advice, landingAdvice } from '../game/coach'
 import { game, useGame } from '../game/game'
 import {
@@ -25,7 +25,8 @@ const CATEGORY_TITLES: Record<MissionCategory, string> = {
   'Speed Run': 'Speed Runs',
   Airline: 'Airline Flights',
   Challenge: 'Challenges',
-  Bombing: 'Bombing Range'
+  Bombing: 'Bombing Range',
+  Strike: 'Air Strike'
 }
 
 const CATEGORY_NOTES: Record<MissionCategory, string> = {
@@ -33,7 +34,8 @@ const CATEGORY_NOTES: Record<MissionCategory, string> = {
   'Speed Run': 'Fighters against the clock.',
   Airline: 'Passengers aboard, gate to gate.',
   Challenge: 'Harder flying when things go wrong.',
-  Bombing: 'The B-2 on the Gull Point practice range.'
+  Bombing: 'The B-2 on the Gull Point practice range.',
+  Strike: 'Fighters with guided missiles on the same range.'
 }
 
 /** Mission text with keys in square brackets drawn as key caps. */
@@ -242,7 +244,10 @@ export function MissionCard({ mission }: { mission: Mission }) {
           </li>
         ))}
       </ol>
-      {mission.bombs !== undefined && <BombPanel total={mission.bombs} />}
+      {mission.missiles !== undefined && <MissilePanel total={mission.missiles} />}
+      {mission.bombs !== undefined && (
+        <BombPanel total={mission.bombs} demolish={mission.demolish} />
+      )}
       {alert && (
         <p
           role="alert"
@@ -256,8 +261,8 @@ export function MissionCard({ mission }: { mission: Mission }) {
   )
 }
 
-/** Bombs left, targets destroyed, and aiming advice, on the bombing missions. */
-function BombPanel({ total }: { total: number }) {
+/** Missiles left, targets hit, and advice on pointing the nose and firing. */
+function MissilePanel({ total }: { total: number }) {
   const count = useRef<HTMLSpanElement>(null)
   const [advice, setAdvice] = useState('')
   const shown = useRef({ text: '', at: 0 })
@@ -267,12 +272,12 @@ function BombPanel({ total }: { total: number }) {
         const { bombs } = game
         setText(
           count.current,
-          `Bombs ${bombs.loaded} of ${total} · Targets hit ${bombs.hits} of ${bombs.targets.length}`
+          `Missiles ${bombs.missiles} of ${total} · Targets hit ${bombs.hits} of ${bombs.targets.length}`
         )
         // Advice holds half a second, so it can be read while it changes
         const now = performance.now()
         if (now - shown.current.at < 500) return
-        const next = bombAdvice(bombs, sim) ?? ''
+        const next = missileAdvice(bombs, sim) ?? ''
         if (next === shown.current.text) return
         shown.current = { text: next, at: now }
         setAdvice(next)
@@ -282,6 +287,66 @@ function BombPanel({ total }: { total: number }) {
   )
   return (
     <div className="border-ink/25 mt-2 border-t pt-2">
+      <span ref={count} className="font-bold tabular-nums" />
+      {advice && (
+        <p className="mt-1 leading-snug">
+          <KeyText text={advice} />
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Bombs left, what they destroyed, and aiming advice. Outside the bombsight it only says
+ * how to open it.
+ */
+export function BombPanel({
+  total,
+  demolish
+}: {
+  total: number
+  /** On a demolition mission, the city whose buildings count toward the goal. */
+  demolish?: Mission['demolish']
+}) {
+  const count = useRef<HTMLSpanElement>(null)
+  const [advice, setAdvice] = useState('')
+  const shown = useRef({ text: '', at: 0 })
+  const bombsight = useGame(state => state.bombsight)
+  useTelemetry(
+    useCallback(
+      (sim: FlightSim) => {
+        const { bombs } = game
+        const hits = bombs.targets.length
+          ? ` · Targets hit ${bombs.hits} of ${bombs.targets.length}`
+          : ''
+        const fallen = bombs.ruins.fallen.length
+        // A demolition counts only the city's own buildings, so show those against the goal
+        const down = demolish
+          ? ` · ${demolish.city} down ${bombs.ruins.fallenInCity(demolish.city)} of ${demolish.goal}`
+          : fallen > 0
+            ? ` · Buildings down ${fallen}`
+            : ''
+        setText(count.current, `Bombs ${bombs.loaded} of ${total}${hits}${down}`)
+        // Advice holds half a second, so it can be read while it changes
+        const now = performance.now()
+        if (now - shown.current.at < 500) return
+        const closed = bombs.loaded > 0 ? 'Press [Tab] to open the bombsight.' : ''
+        const next = bombsight ? (bombAdvice(bombs, sim) ?? '') : closed
+        if (next === shown.current.text) return
+        shown.current = { text: next, at: now }
+        setAdvice(next)
+      },
+      [total, bombsight, demolish]
+    )
+  )
+  return (
+    <div className="border-ink/25 mt-2 border-t pt-2">
+      {bombsight && (
+        <p className="text-go mb-1 text-xs font-bold tracking-wide uppercase">
+          Bombsight · <KeyText text="[Tab] closes it" />
+        </p>
+      )}
       <span ref={count} className="font-bold tabular-nums" />
       {advice && (
         <p className="mt-1 leading-snug">

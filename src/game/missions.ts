@@ -1,18 +1,34 @@
 import type { Controls, FlightSim } from '../sim/flight-sim'
 import { APPROACHES } from '../world/approaches'
-import { AIRPORTS, type Airport, heightAt, isPaved, outside, RANGE } from '../world/island'
+import {
+  AIRPORTS,
+  type Airport,
+  CITIES,
+  fromStrip,
+  heightAt,
+  isPaved,
+  outside,
+  RANGE
+} from '../world/island'
 import type { Bombs, Target } from './bombs'
 import type { TimeOfDay, Weather, WindLevel } from './game'
 import type { Navigator } from './navigation'
 import type { Pilot } from './pilot'
 
-export type MissionCategory = 'Tutorial' | 'Speed Run' | 'Airline' | 'Challenge' | 'Bombing'
+export type MissionCategory =
+  | 'Tutorial'
+  | 'Speed Run'
+  | 'Airline'
+  | 'Challenge'
+  | 'Bombing'
+  | 'Strike'
 export const MISSION_CATEGORIES: MissionCategory[] = [
   'Tutorial',
   'Speed Run',
   'Airline',
   'Challenge',
-  'Bombing'
+  'Bombing',
+  'Strike'
 ]
 
 /** A ring to fly through, in order. Heading is in radians. */
@@ -34,6 +50,8 @@ export type MissionContext = {
   parkedAt: Airport | null
   /** The bomb bay and its targets, on bombing missions. */
   bombs?: Bombs
+  /** True while the player looks through the bombsight. */
+  bombsight?: boolean
 }
 
 /**
@@ -59,7 +77,17 @@ export type Objective = {
 /** Where the mission begins. Headings are in degrees, speeds in knots, altitudes in metres. */
 export type MissionStart =
   | { kind: 'stand' | 'runway'; airport: string }
-  | { kind: 'air'; x: number; z: number; altitude: number; heading: number; speed: number }
+  | {
+      kind: 'air'
+      x: number
+      z: number
+      altitude: number
+      heading: number
+      speed: number
+      /** Degrees below the horizon to start gliding down, instead of level. */
+      glide?: number
+      speedBrake?: boolean
+    }
   | {
       kind: 'approach'
       approach: string
@@ -95,6 +123,10 @@ export type Mission = {
   targets?: Target[]
   /** GPS-guided bombs, which steer themselves from the launch zone around a target. */
   guided?: boolean
+  /** Guided missiles on the rails, for fighters. */
+  missiles?: number
+  /** A city to bring down, and how many of its buildings must fall. */
+  demolish?: { city: string; goal: number }
   objectives: Objective[]
   /** Ways to fail. The reason can read the context, to quote a figure such as the sink rate. */
   failures?: Failure[]
@@ -236,11 +268,29 @@ const startup = (engines: number): Objective[] => [
 const ISLAND_RING = gatesThrough(circle(500, 500, 12_500, 8), 140, 90)
 
 /** A target on the bombing range, by its distance east and south of the range's centre. */
-const rangeTarget = (east: number, south: number, radius: number, label: string): Target => ({
-  x: RANGE.x + east,
-  z: RANGE.z + south,
-  radius,
-  label
+const rangeTarget = (
+  east: number,
+  south: number,
+  radius: number,
+  label: string,
+  height?: number
+): Target => ({ x: RANGE.x + east, z: RANGE.z + south, radius, label, height })
+
+/** Missiles left and in flight, and targets hit, on the strike missions. */
+const missilesOf = (c: MissionContext) => ({
+  hits: c.bombs?.hits ?? 0,
+  left: c.bombs?.missiles ?? 0,
+  flying: c.bombs?.flying.length ?? 0
+})
+
+/** Fails once every missile has flown with targets still standing. */
+const outOfMissiles = (needed: number): Failure => ({
+  reason:
+    'Every missile is gone and a target still stands. Wait for the box to turn red before you fire.',
+  failed: c => {
+    const { hits, left, flying } = missilesOf(c)
+    return hits < needed && left === 0 && flying === 0
+  }
 })
 
 /** Targets destroyed so far, and the bombs left and still falling. */
@@ -272,6 +322,39 @@ const RANGE_RUN = gatesThrough(
   160,
   150
 )
+// The fire mission starts 6 km past the end of Coral Bay's runway 09, climbing out over the
+// sea, and both engines catch fire a few seconds in
+const FIRE_RUNWAY =
+  AIRPORTS.find(airport => airport.code === 'CBI')?.runways[0] ?? AIRPORTS[0].runways[0]
+const FIRE_START = fromStrip(FIRE_RUNWAY, FIRE_RUNWAY.length / 2 + 6000, 0)
+const FIRE_AT = 6
+// The demolition run: Verity, approached along its length from 9 km out over the sea to its
+// east, at a height that clears the hills to its west
+const VERITY = CITIES.find(city => city.name === 'Verity') ?? CITIES[0]
+const DEMOLITION_START = fromStrip(VERITY, VERITY.length / 2 + 9000, 0)
+const DEMOLITION_ALTITUDE = 1100
+const DEMOLITION_GOAL = 300
+// A low lap around the island north-west of the main one, all over open sea
+const MUSTANG_LAP = gatesThrough(circle(-9500, 12_000, 6000, 10), 100, 80)
+
+// The Shuttle glides onto Port Azure's runway 36 from the south. Its steep outer glideslope
+// aims 1.5 km short of the runway, so the round-out from 2,000 ft ends early on the runway and
+// leaves room to stop. The start is 10.5 km out along it.
+const SHUTTLE_RUNWAY = AIRPORTS.find(airport => airport.code === 'PAZ')?.runways[0] ?? FIRE_RUNWAY
+const SHUTTLE_SLOPE = 19 * DEGREES
+const SHUTTLE_AIM = SHUTTLE_RUNWAY.length / 2 + 1500
+const SHUTTLE_ELEVATION = heightAt(SHUTTLE_RUNWAY.x, SHUTTLE_RUNWAY.z)
+const shuttlePath = (distance: number) => ({
+  ...fromStrip(SHUTTLE_RUNWAY, -(SHUTTLE_AIM + distance), 0),
+  y: SHUTTLE_ELEVATION + distance * Math.tan(SHUTTLE_SLOPE)
+})
+const SHUTTLE_START = shuttlePath(10_500)
+const SHUTTLE_GATES: Gate[] = [8000, 5000, 2500].map(distance => ({
+  ...shuttlePath(distance),
+  heading: (SHUTTLE_RUNWAY.heading * Math.PI) / 180,
+  radius: 160
+}))
+
 const NORTH_TO_EAST = gatesThrough(line(airport('NGT'), airport('EMK'), 6), 180, 110)
 
 export const MISSIONS: Mission[] = [
@@ -612,6 +695,160 @@ export const MISSIONS: Mission[] = [
     failures: [tooHard(700 * FPM), offRunway]
   },
   {
+    id: 'dual-fire',
+    title: 'Double Engine Fire',
+    category: 'Challenge',
+    aircraft: 'a320',
+    summary: 'Both engines burn after takeoff. Put out the fires and glide to safety.',
+    briefing:
+      'Your A320 has just left Coral Bay, climbing through 4,500 ft over the sea. Both engines are about to catch fire. Shut them down, fire the extinguishers, then glide with no power to a runway. Coral Bay is 8 km behind you, and two smaller fields are closer. If none is in reach, ditch gently in the sea.',
+    start: { kind: 'air', ...FIRE_START, altitude: 1370, heading: 90, speed: 220 },
+    script: c => {
+      if (c.time < FIRE_AT || c.sim.engines.every(engine => engine.failed)) return
+      for (const engine of c.sim.engines) {
+        engine.fire = true
+        engine.failed = true
+      }
+    },
+    timeLimit: 600,
+    objectives: [
+      {
+        text: 'Fire in both engines! Press [1] and [2] to shut them down.',
+        done: c =>
+          c.time > FIRE_AT && !c.controls.engineSwitches[0] && !c.controls.engineSwitches[1]
+      },
+      {
+        text: 'Press [Shift] with [1], then [Shift] with [2], to fire the extinguishers.',
+        done: c => c.time > FIRE_AT && c.sim.engines.every(engine => !engine.fire)
+      },
+      {
+        text: 'Glide at about 210 knots with no power. Press [N] for the nearest runway and turn toward it.',
+        done: c => c.nav.approach !== null
+      },
+      {
+        text: 'Lower the gear and flaps late, and land. Out of reach? Ditch in the sea: gear up, wings level, nose a little up.',
+        done: c => c.touchdown?.paved === true || c.sim.ditched
+      },
+      { text: 'Bring the aircraft to a stop.', done: stopped }
+    ],
+    failures: [
+      {
+        reason: 'The fire spread to the wings. Shut each engine down, then fire its extinguisher.',
+        failed: c => c.sim.engines.some(engine => engine.fire),
+        grace: 45,
+        warning: c =>
+          c.sim.engines.some((engine, i) => engine.fire && c.controls.engineSwitches[i])
+            ? 'The fire is spreading: shut the burning engines down with [1] and [2].'
+            : 'The fire is spreading: fire the extinguishers with [Shift] and [1], [Shift] and [2].'
+      },
+      tooHard(700 * FPM),
+      {
+        reason: 'The aircraft touched down off the runway. Land on a runway, or ditch in the sea.',
+        failed: c => c.touchdown !== null && !c.touchdown.paved && !c.sim.ditched
+      }
+    ]
+  },
+  {
+    id: 'shuttle-landing',
+    title: 'Shuttle Landing',
+    category: 'Challenge',
+    aircraft: 'shuttle',
+    summary: 'Glide the Space Shuttle down a 19° slope with no engines, and land it once.',
+    briefing:
+      'The orbiter is back from space, 12,000 ft up and 13 km from Port Azure, falling like a brick. It has no engines: one approach, one landing. Ride the steep slope through the rings at about 290 knots, using the speed brake [B] to hold the speed. At 2,000 ft pull the nose up gently into a shallow glide, lower the gear at 300 ft, and touch down near 200 knots.',
+    start: {
+      kind: 'air',
+      x: SHUTTLE_START.x,
+      z: SHUTTLE_START.z,
+      altitude: SHUTTLE_START.y,
+      heading: SHUTTLE_RUNWAY.heading,
+      speed: 300 / Math.sqrt(Math.exp(-SHUTTLE_START.y / 9000)),
+      glide: 19,
+      speedBrake: true
+    },
+    gates: SHUTTLE_GATES,
+    timeLimit: 300,
+    objectives: [
+      {
+        text: `Dive through the ${SHUTTLE_GATES.length} rings at about 290 knots. Press [B] to close the speed brake if you slow below 280.`,
+        done: c => c.gates >= SHUTTLE_GATES.length || below(2000)(c)
+      },
+      {
+        text: 'At 2,000 ft, raise the nose gently with [↓] into a shallow glide.',
+        done: below(300)
+      },
+      { text: 'Press [G] to lower the gear.', done: c => c.controls.gearDown },
+      {
+        text: 'Flare and touch down on the runway near 200 knots.',
+        done: c => c.touchdown?.paved === true
+      },
+      {
+        text: 'Lower the nose gently, then hold [Space] to stop.',
+        done: stopped
+      }
+    ],
+    failures: [tooHard(500 * FPM), offRunway]
+  },
+  {
+    id: 'mustang-takeoff',
+    title: 'Mustang Takeoff',
+    category: 'Challenge',
+    aircraft: 'p51',
+    summary: 'Tame the propeller swing of a P-51 on its takeoff roll.',
+    briefing:
+      "The P-51 Mustang sits nose-high on its tail wheel at Coral Bay. Its 1,490 hp Merlin and big propeller swing the nose hard left as the power comes in, and the tail wheel doesn't steer. Hold right rudder with D, keep it straight on the runway, and climb away.",
+    start: { kind: 'runway', airport: 'CBI' },
+    objectives: [
+      { text: 'Press [I] to start the engine.', done: c => c.sim.enginesRunning === 1 },
+      { text: 'Press [P] to release the parking brake.', done: c => !c.controls.parkingBrake },
+      {
+        text: 'Add full power with [W]. Hold [D] for right rudder to keep the nose straight.',
+        done: c => c.sim.groundSpeed > 30
+      },
+      {
+        text: 'Ease back with [↓] and lift off near 110 knots.',
+        done: c => !c.sim.onGround && c.sim.altitudeAgl > 15
+      },
+      {
+        text: 'Raise the gear with [G] and climb to 1,000 ft.',
+        done: c => !c.controls.gearDown && c.sim.altitudeAgl > 1000 * FEET
+      }
+    ],
+    failures: [
+      {
+        reason:
+          'The Mustang swung off the runway. Hold right rudder [D] as the power comes in, more as it speeds up.',
+        failed: c =>
+          c.sim.onGround && c.sim.groundSpeed > 3 && !isPaved(c.sim.position.x, c.sim.position.z)
+      }
+    ]
+  },
+  {
+    id: 'mustang-race',
+    title: 'Mustang Race',
+    category: 'Speed Run',
+    aircraft: 'p51',
+    summary: `Race a P-51 low around an island through ${MUSTANG_LAP.length} gates.`,
+    briefing:
+      'Wave-top racing in a P-51 Mustang: one lap around the island north-west of Coral Bay, about 330 ft over the sea. Full power, steep turns, and watch the water. You have 5 minutes.',
+    start: {
+      kind: 'air',
+      x: MUSTANG_LAP[0].x - 2500,
+      z: MUSTANG_LAP[0].z,
+      altitude: MUSTANG_LAP[0].y,
+      heading: 90,
+      speed: 300
+    },
+    gates: MUSTANG_LAP,
+    timeLimit: 300,
+    objectives: [
+      {
+        text: `Fly through all ${MUSTANG_LAP.length} gates in order. The next one glows green.`,
+        done: c => c.gates >= MUSTANG_LAP.length
+      }
+    ]
+  },
+  {
     id: 'night-fog',
     title: 'Night Fog',
     category: 'Challenge',
@@ -725,8 +962,8 @@ export const MISSIONS: Mission[] = [
     timeLimit: 600,
     objectives: [
       {
-        text: 'Fly toward the orange marker on the range. The cross ahead of you shows where a bomb would land.',
-        done: c => Math.hypot(c.sim.position.x - RANGE.x, c.sim.position.z - RANGE.z) < 8000
+        text: 'Press [Tab] to open the bombsight. The cross on the ground shows where a bomb would land.',
+        done: c => c.bombsight === true
       },
       {
         text: 'Steer gently until the cross turns green and the card says lined up, then press [Enter].',
@@ -764,7 +1001,7 @@ export const MISSIONS: Mission[] = [
         done: c => c.gates >= RANGE_RUN.length
       },
       {
-        text: 'Destroy the fuel depot: press [Enter] once the cross turns green.',
+        text: 'Press [Tab] for the bombsight. Destroy the fuel depot: press [Enter] once the cross turns green.',
         done: c => bombsOf(c).hits >= 1
       },
       { text: 'Destroy the radar just past it.', done: c => bombsOf(c).hits >= 2 }
@@ -793,7 +1030,7 @@ export const MISSIONS: Mission[] = [
     timeLimit: 540,
     objectives: [
       {
-        text: 'Head for Gull Point Range. The card steers you there.',
+        text: 'Press [Tab] for the bombsight, then head for Gull Point Range. The card steers you there.',
         done: c => Math.hypot(c.sim.position.x - RANGE.x, c.sim.position.z - RANGE.z) < 15_000
       },
       {
@@ -803,6 +1040,104 @@ export const MISSIONS: Mission[] = [
       { text: 'Watch it fall: the bunker must go.', done: c => bombsOf(c).hits >= 1 }
     ],
     failures: [outOfBombs(1)]
+  },
+  {
+    id: 'demolition',
+    title: 'Demolition',
+    category: 'Bombing',
+    aircraft: 'b2',
+    summary: `Bring down ${DEMOLITION_GOAL} of the empty city of Verity's buildings.`,
+    briefing: `Verity's old city stands empty, waiting to be cleared for a new one. The demolition crews asked for the fast way. Open the bombsight with Tab, then hold Enter as you cross the city to drop a string of bombs. Bring down ${DEMOLITION_GOAL} buildings with 80 bombs in 20 minutes. Hills rise to 2,600 ft west of the city, so stay at 3,600 ft and turn back over them or the sea.`,
+    start: {
+      kind: 'air',
+      ...DEMOLITION_START,
+      altitude: DEMOLITION_ALTITUDE,
+      heading: (VERITY.heading + 180) % 360,
+      speed: 300
+    },
+    bombs: 80,
+    demolish: { city: VERITY.name, goal: DEMOLITION_GOAL },
+    timeLimit: 1200,
+    objectives: [
+      { text: 'Press [Tab] to open the bombsight.', done: c => c.bombsight === true },
+      {
+        text: 'Fly along the city and hold [Enter] over it for a string of bombs.',
+        done: c => (c.bombs?.ruins.fallenInCity(VERITY.name) ?? 0) > 0
+      },
+      {
+        text: `Bring down ${DEMOLITION_GOAL} buildings. Turn back for more runs.`,
+        done: c => (c.bombs?.ruins.fallenInCity(VERITY.name) ?? 0) >= DEMOLITION_GOAL
+      }
+    ],
+    failures: [
+      {
+        reason:
+          'The bomb bay is empty and the city still stands. Fly straight along it while you hold Enter.',
+        failed: c => {
+          const { left, falling } = bombsOf(c)
+          const fallen = c.bombs?.ruins.fallenInCity(VERITY.name) ?? 0
+          return left === 0 && falling === 0 && fallen < DEMOLITION_GOAL
+        }
+      }
+    ]
+  },
+  {
+    id: 'missile-run',
+    title: 'Missile Run',
+    category: 'Strike',
+    aircraft: 'f16',
+    summary: 'An F-16 with four missiles against a radar, a fuel depot, and a target tower.',
+    briefing:
+      'Your F-16 is 22 km west of Gull Point Range at 3,000 ft with four guided missiles. A white box marks each target. Point the nose at one until its box turns red, then press Enter. The missile does the rest. You have 7 minutes.',
+    start: { kind: 'air', x: RANGE.x - 22_000, z: RANGE.z, altitude: 900, heading: 90, speed: 400 },
+    missiles: 4,
+    targets: [
+      rangeTarget(0, 0, 15, 'target tower', 70),
+      rangeTarget(320, -260, 20, 'radar'),
+      rangeTarget(-280, 240, 25, 'fuel depot')
+    ],
+    timeLimit: 420,
+    objectives: [
+      {
+        text: 'Fly toward the range. Point the nose at a white box until it turns red.',
+        done: c => (c.bombs?.lock ?? -1) >= 0
+      },
+      { text: 'Press [Enter] to fire. Hit your first target.', done: c => missilesOf(c).hits >= 1 },
+      { text: 'Destroy all three targets.', done: c => missilesOf(c).hits >= 3 }
+    ],
+    failures: [outOfMissiles(3)]
+  },
+  {
+    id: 'tower-strike',
+    title: 'Tower Strike',
+    category: 'Strike',
+    aircraft: 'f35',
+    summary: 'Dive an F-35 from 20,000 ft and bring down a 90 m tower with one shot.',
+    briefing:
+      'The F-35 starts high and fast, 40 km out. Dive toward Gull Point Range, put the box on the 90 m target tower, and fire. You carry two missiles, so a miss leaves you one more try. You have 8 minutes.',
+    start: {
+      kind: 'air',
+      x: RANGE.x - 40_000,
+      z: RANGE.z + 3000,
+      altitude: 6100,
+      heading: 86,
+      speed: 450
+    },
+    missiles: 2,
+    targets: [rangeTarget(0, 0, 18, 'target tower', 90)],
+    timeLimit: 480,
+    objectives: [
+      {
+        text: 'Head for Gull Point Range and dive. The card tells you where to turn.',
+        done: c => Math.hypot(c.sim.position.x - RANGE.x, c.sim.position.z - RANGE.z) < 12_000
+      },
+      {
+        text: 'Lock on the tower: the box turns red. Press [Enter] to fire.',
+        done: c => missilesOf(c).left < 2
+      },
+      { text: 'Bring the tower down.', done: c => missilesOf(c).hits >= 1 }
+    ],
+    failures: [outOfMissiles(1)]
   }
 ]
 

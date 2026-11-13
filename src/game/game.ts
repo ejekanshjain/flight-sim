@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { Vector3 } from 'three'
-import { type AircraftSpec, DEFAULT_AIRCRAFT, HANGAR, KNOT } from '../sim/aircraft'
+import { type AircraftSpec, DEFAULT_AIRCRAFT, engineArms, HANGAR, KNOT } from '../sim/aircraft'
 import { type CrashReason, FlightSim } from '../sim/flight-sim'
 import { APPROACHES, onCentreline, pathAltitude } from '../world/approaches'
 import {
@@ -50,6 +50,8 @@ export type Arrival = {
 export type GameState = {
   status: Status
   camera: CameraMode
+  /** Looking down from the bomb bay with the aiming cross. Tab switches it on and off. */
+  bombsight: boolean
   wind: WindLevel
   muted: boolean
   /** Live landing advice on screen. */
@@ -81,7 +83,14 @@ export const WIND_SPEEDS: Record<WindLevel, number> = { calm: 0, light: 4, stron
 export const WIND_FROM = 60
 
 // A bomb's blast throws debris straight up and out, carried by nothing
-const BOMB_DRIFT = new Vector3()
+// Holding Enter over a city drops a string of bombs: the first repeat after this many
+// seconds, then one every gap
+const RIPPLE_START = 0.6
+const RIPPLE_GAP = 0.7
+// Burning ruins shown at once, newest first, so a flattened city stays within the smoke budget
+const BURNING_RUINS = 20
+// Seconds the bombsight stays on after the last bomb, to watch its blast
+const SIGHT_LINGER = 2.5
 const spot = new Vector3()
 // Longest physics step in seconds. Longer frames are split into several steps.
 const MAX_STEP = 1 / 120
@@ -95,6 +104,23 @@ const AIRBORNE_HEIGHT = 30
 /** True when an aircraft can use an airport's main runway. */
 export const canUse = (spec: AircraftSpec, airport: Airport) =>
   airport.runways[0].length >= spec.runwayNeeded
+
+const spotsBySpec = new WeakMap<AircraftSpec, Vector3[]>()
+
+/** The back of each engine in body axes, numbered from the left wing, where a fire burns. */
+function engineSpots(spec: AircraftSpec) {
+  const known = spotsBySpec.get(spec)
+  if (known) return known
+  const { shape } = spec
+  let spots = engineArms(spec).map(x => new Vector3(x, 0, 0))
+  if (shape.type === 'airliner') {
+    const right = [...shape.engines].sort((a, b) => a[0] - b[0])
+    const back = (x: number, z: number) => new Vector3(x, shape.engineY, z + shape.engineLength)
+    spots = [...right.map(([x, z]) => back(-x, z)).reverse(), ...right.map(([x, z]) => back(x, z))]
+  }
+  spotsBySpec.set(spec, spots)
+  return spots
+}
 
 /** Owns the simulation, the pilot's controls, and the menu state. */
 class Game {
@@ -120,10 +146,16 @@ class Game {
   // A won bombing mission waiting for its last explosion to play out
   private won: { result: MissionResult; left: number } | null = null
   private readonly lastBlast = new Vector3()
+  // Seconds since a ditching, for the spray it throws up
+  private sprayClock = 0
+  // Enter held down in the bombsight, and seconds until the next bomb of the string
+  private rippleHeld = false
+  private rippleClock = 0
 
   // Settings come back as the player left them
   private state: GameState = {
     status: 'menu',
+    bombsight: false,
     ...savedState(),
     crash: null,
     crashShown: false,
@@ -255,7 +287,8 @@ class Game {
         const heading = (start.heading * Math.PI) / 180
         this.sim.placeInAir(start.x, start.altitude, start.z, heading, knots)
         this.pilot.resetForAir(spec, this.sim)
-        this.settle(0, 0, fixedGear)
+        this.settle(((start.glide ?? 0) * Math.PI) / 180, 0, fixedGear)
+        this.pilot.controls.speedBrake = start.speedBrake ?? false
       } else {
         const approach = APPROACHES.find(candidate => candidate.id === start.approach)
         if (!approach) return
@@ -272,7 +305,12 @@ class Game {
     if (approach) this.nav.select(approach, this.sim)
     this.missions.start(mission, this.sim)
     this.won = null
-    this.bombs.load(mission.bombs ?? 0, mission.targets ?? [], mission.guided)
+    this.bombs.load(
+      mission.bombs ?? 0,
+      mission.targets ?? [],
+      mission.guided,
+      mission.missiles ?? 0
+    )
   }
 
   /** Flies the current mission again from the start. */
@@ -380,6 +418,15 @@ class Game {
   setTime = (time: TimeOfDay) => this.change({ time })
   toggleMuted = () => this.change({ muted: !this.state.muted })
   setCoach = (on: boolean) => this.change({ coach: on })
+  /** Enters or leaves the bombsight. It only opens with bombs aboard. */
+  toggleBombsight = () => {
+    const { bombs } = this
+    const open = this.state.bombsight
+    if (!open && bombs.loaded === 0 && bombs.falling.length === 0) return
+    this.rippleHeld = false
+    this.setState({ bombsight: !open })
+  }
+
   toggleCamera = () => this.change({ camera: this.state.camera === 'chase' ? 'cockpit' : 'chase' })
   toggleMap = () => {
     const next = { small: 'large', large: 'hidden', hidden: 'small' } as const
@@ -433,14 +480,16 @@ class Game {
         this.updateWind()
         this.sim.step(step, this.pilot.controls, this.wind)
         // Trees, buildings, balloons, boats, and other aircraft are solid
-        this.sim.crash ??= findCollision(this.sim, this.sceneryTime, this.traffic)
+        this.sim.crash ??= findCollision(this.sim, this.sceneryTime, this.traffic, this.bombs.ruins)
         if (this.sim.crash) break
       }
       if (this.sim.crash) this.breakUp(this.sim.crash)
       else {
         this.gpws.update(dt, this.sim, this.pilot.controls, this.nav)
         if (this.effects.emitFlight(dt, this.sim, ISLAND_GROUND)) this.sound.chirp()
+        this.burnEngines(dt)
         this.trackFlight()
+        this.dropString(dt)
         for (const impact of this.bombs.update(dt, this.sim, ISLAND_GROUND)) this.blast(impact)
         this.burnTargets(dt)
         this.checkMission(dt)
@@ -470,9 +519,25 @@ class Game {
       // A focused button or list already reacts to Enter
       const widget =
         event.target instanceof HTMLButtonElement || event.target instanceof HTMLSelectElement
-      // Enter releases a bomb in flight, and starts or resumes from the menus
+      // Tab opens and closes the bombsight, so the browser must not move the focus
+      if (event.code === 'Tab' && status === 'flying') {
+        event.preventDefault()
+        if (!event.repeat) this.toggleBombsight()
+        return
+      }
+      // Enter releases a bomb in the bombsight, and starts or resumes from the menus
       if (event.code === 'Enter' && status === 'flying') {
-        if (!event.repeat) this.bombs.release(this.sim)
+        event.preventDefault()
+        if (event.repeat) return
+        // Missiles fire straight from the normal view, with no sight to open
+        if (this.bombs.missiles > 0) {
+          this.bombs.fire(this.sim)
+          return
+        }
+        if (!this.state.bombsight) return
+        this.bombs.release(this.sim)
+        this.rippleHeld = true
+        this.rippleClock = RIPPLE_START
         return
       }
       if (event.code === 'Enter' && !widget) {
@@ -496,7 +561,10 @@ class Game {
         event.preventDefault()
       }
     }
-    const onKeyUp = (event: KeyboardEvent) => this.pilot.release(event.code)
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code === 'Enter') this.rippleHeld = false
+      this.pilot.release(event.code)
+    }
     const onBlur = () => this.pause()
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
@@ -525,7 +593,8 @@ class Game {
       pilot: this.pilot,
       nav: this.nav,
       parkedAt: this.parkedAirport(),
-      bombs: this.bombs
+      bombs: this.bombs,
+      bombsight: this.state.bombsight
     })
     if (!result) return
     if (result.passed && this.bombs.targets.length > 0) {
@@ -557,14 +626,58 @@ class Game {
     this.lastBlast.copy(impact.at)
     const distance = impact.at.distanceTo(this.sim.position)
     const shake = this.effects.shake
-    if (impact.water) this.effects.splash(impact.at, 2)
-    else this.effects.explode(impact.at, BOMB_DRIFT, 3.2, true)
-    this.effects.shake = Math.max(shake, 0.7 * Math.max(0, 1 - distance / 2500))
+    if (impact.water) this.effects.splash(impact.at, 3)
+    else this.effects.bombBlast(impact.at)
+    this.effects.shake = Math.max(shake, 0.9 * Math.max(0, 1 - distance / 3000))
     if (!this.state.muted)
       this.sound.crash(Math.max(0.15, Math.min(1, 1.2 - distance / 6000)), impact.water)
   }
 
-  /** Destroyed targets burn, then smoulder, for the rest of the mission. */
+  /**
+   * Holding Enter in the bombsight over a city drops a string of bombs. Missions with
+   * targets keep one bomb per press, so a held key never spoils an armed release.
+   */
+  private dropString(dt: number) {
+    const { bombs } = this
+    if (this.state.bombsight && bombs.loaded === 0 && bombs.falling.length === 0) {
+      if (bombs.sinceImpact > SIGHT_LINGER) this.setState({ bombsight: false })
+    }
+    if (!this.rippleHeld || !this.state.bombsight || bombs.targets.length > 0) return
+    this.rippleClock -= dt
+    if (this.rippleClock > 0) return
+    bombs.drop(this.sim)
+    this.rippleClock = RIPPLE_GAP
+  }
+
+  /**
+   * Flames and smoke from each burning engine, and spray while a ditched aircraft slides to
+   * a stop on the sea.
+   */
+  private burnEngines(dt: number) {
+    const { sim } = this
+    const spots = engineSpots(sim.spec)
+    for (const missile of this.bombs.flying) this.effects.missileTrail(missile.position, dt)
+    sim.engines.forEach((engine, i) => {
+      if (!engine.fire) return
+      spot
+        .copy(spots[i] ?? spots[0])
+        .applyQuaternion(sim.orientation)
+        .add(sim.position)
+      this.effects.engineFire(spot, dt)
+    })
+    if (!sim.ditched) {
+      this.sprayClock = 0
+      return
+    }
+    // The first touch throws up a big sheet of spray, then less as the aircraft slows
+    if (this.sprayClock === 0) this.effects.splash(sim.position, 2.5)
+    this.sprayClock += dt
+    if (sim.groundSpeed > 4 && this.sprayClock % 0.2 < dt) {
+      this.effects.splash(sim.position, Math.min(0.6, sim.groundSpeed / 80))
+    }
+  }
+
+  /** Destroyed targets and the newest ruins burn, then smoulder, for the rest of the flight. */
   private burnTargets(dt: number) {
     const { bombs } = this
     bombs.targets.forEach((target, i) => {
@@ -572,6 +685,14 @@ class Game {
       spot.set(target.x, ISLAND_GROUND.heightAt(target.x, target.z), target.z)
       this.effects.burn(spot, 1, dt)
     })
+    const { craters } = bombs.ruins
+    for (let i = craters.length - 1, shown = 0; i >= 0 && shown < BURNING_RUINS; i--) {
+      const crater = craters[i]
+      if (crater.fell === 0) continue
+      shown++
+      spot.set(crater.x, ISLAND_GROUND.heightAt(crater.x, crater.z), crater.z)
+      this.effects.burn(spot, 1.4, dt)
+    }
   }
 
   /** The airport whose apron the aircraft is parked on, brake set and engines off. */
@@ -633,7 +754,9 @@ class Game {
   }
 
   private fly() {
-    this.bombs.clear()
+    // Bombers carry a load in free flight too. A mission loads its own after this.
+    this.bombs.load(this.sim.spec.bombBay ?? 0, [])
+    this.rippleHeld = false
     this.pilot.releaseAll()
     this.gpws.reset(this.sim)
     this.nav.load(null, this.sim)
@@ -641,7 +764,13 @@ class Game {
     this.liftoffTime = null
     this.sinkRate = 0
     this.touchdownRate = 0
-    this.setState({ status: 'flying', crash: null, crashShown: false, arrival: null })
+    this.setState({
+      status: 'flying',
+      bombsight: false,
+      crash: null,
+      crashShown: false,
+      arrival: null
+    })
   }
 
   /** Ends the flight: the aircraft breaks apart with a blast on land or a splash at sea. */

@@ -4,6 +4,7 @@ import { FlightSim } from '../sim/flight-sim'
 import { ISLAND_GROUND } from '../world/island'
 import { balloonPosition, OBSTACLES, TREES } from '../world/scenery'
 import { findCollision } from './collision'
+import { Ruins } from './ruins'
 import { Traffic } from './traffic'
 
 const traffic = new Traffic()
@@ -35,4 +36,18 @@ test('flying through a tree, a building, or a balloon is a collision', () => {
 test('flying above the treetops is clear', () => {
   const tree = TREES[0]
   expect(findCollision(flyingAt(tree.x, tree.y + tree.tall + 15, tree.z), 0, traffic)).toBeNull()
+})
+
+test('a building a bomb brought down is no longer solid', () => {
+  const building = OBSTACLES.find(obstacle => obstacle.kind === 'building')
+  if (!building) throw new Error('The island has no buildings to test against')
+  const middle = (building.base + building.top) / 2
+  const ruins = new Ruins()
+  expect(ruins.blast(building.x + 30, building.z)).toBeGreaterThan(0)
+  expect(findCollision(flyingAt(building.x, middle, building.z), 0, traffic, ruins)).toBeNull()
+  // A fresh flight puts it back
+  ruins.clear()
+  expect(findCollision(flyingAt(building.x, middle, building.z), 0, traffic, ruins)).toBe(
+    'building'
+  )
 })

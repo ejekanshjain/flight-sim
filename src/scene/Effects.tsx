@@ -1,18 +1,47 @@
 import { useFrame } from '@react-three/fiber'
 import { useMemo, useRef } from 'react'
-import { Mesh, type PointLight } from 'three'
+import {
+  AdditiveBlending,
+  DoubleSide,
+  Mesh,
+  MeshBasicMaterial,
+  type PointLight,
+  RingGeometry
+} from 'three'
+import { EFFECTS_CAPACITY, SHOCKWAVE_LIFE } from '../game/effects'
 import { game } from '../game/game'
 import { billboardMaterial, makeBillboards } from './billboards'
 
 // Floats per particle in Effects.data
 const STRIDE = 20
-const CAPACITY = 4000
+// Shock rings drawn at once, and the radius in metres they spread to
+const SHOCK_RINGS = 8
+const SHOCK_REACH = 600
 
 /** Draws the particle pool as soft sprites and lights the scene during an explosion. */
 export function Effects() {
   const light = useRef<PointLight>(null)
   const uploaded = useRef(0)
-  const sprites = useMemo(() => makeBillboards(CAPACITY, true), [])
+  const sprites = useMemo(() => makeBillboards(EFFECTS_CAPACITY, true), [])
+  const rings = useMemo(() => {
+    const geometry = new RingGeometry(0.86, 1, 64).rotateX(-Math.PI / 2)
+    return Array.from({ length: SHOCK_RINGS }, () => {
+      const ring = new Mesh(
+        geometry,
+        new MeshBasicMaterial({
+          color: '#ffe2b8',
+          transparent: true,
+          blending: AdditiveBlending,
+          depthWrite: false,
+          side: DoubleSide,
+          toneMapped: false
+        })
+      )
+      ring.frustumCulled = false
+      ring.visible = false
+      return ring
+    })
+  }, [])
   const mesh = useMemo(() => {
     const particles = new Mesh(sprites.geometry, billboardMaterial(0.5, 4))
     particles.frustumCulled = false
@@ -58,6 +87,18 @@ export function Effects() {
     }
     uploaded.current = effects.count
 
+    // Each shock ring races out fast, slows, and fades
+    rings.forEach((ring, i) => {
+      const wave = effects.shockwaves[i]
+      ring.visible = wave !== undefined
+      if (!wave) return
+      const age = wave.age / SHOCKWAVE_LIFE
+      const spread = 1 - (1 - age) ** 3
+      ring.position.set(wave.x, wave.y + 3, wave.z)
+      ring.scale.setScalar(8 + spread * SHOCK_REACH)
+      ;(ring.material as MeshBasicMaterial).opacity = 0.9 * (1 - age) ** 2
+    })
+
     if (light.current) {
       light.current.position.copy(effects.flashPosition)
       light.current.intensity = effects.flash * 3500
@@ -67,6 +108,9 @@ export function Effects() {
   return (
     <>
       <primitive object={mesh} />
+      {rings.map(ring => (
+        <primitive key={ring.uuid} object={ring} />
+      ))}
       {/* Always in the scene, so the blast never forces the materials to rebuild */}
       <pointLight ref={light} color="#ff8a3c" intensity={0} decay={2} />
     </>

@@ -15,7 +15,7 @@ import {
 } from 'three'
 import { game, useGame } from '../game/game'
 import { PART_NAMES, type PartName } from '../game/wreck'
-import type { AircraftSpec, AirlinerShape, BomberShape, Shape } from '../sim/aircraft'
+import type { AircraftSpec, AirlinerShape, BomberShape, Shape, ShuttleShape } from '../sim/aircraft'
 import { useDisposal } from './dispose'
 
 const QUARTER_TURN = Math.PI / 2
@@ -87,7 +87,9 @@ function useAirframe(spec: AircraftSpec, body: string, accent: string): Airframe
     } else {
       root.current.position.copy(sim.position)
       root.current.quaternion.copy(sim.orientation)
-      root.current.visible = game.getState().camera === 'chase'
+      // The bombsight looks out from under the belly, past where the airframe would be
+      const { camera, bombsight } = game.getState()
+      root.current.visible = camera === 'chase' && !bombsight
       parts.current.forEach((part, i) => {
         part?.position.copy(spec.breakup[i].rest)
         part?.quaternion.identity()
@@ -168,7 +170,13 @@ export function Aircraft() {
         ))}
       {shape.type === 'fighter' && <FighterModel key={spec.id} spec={spec} shape={shape} />}
       {shape.type === 'bomber' && <BomberModel key={spec.id} spec={spec} shape={shape} />}
-      {shape.type === 'propeller' && <PropellerModel key={spec.id} spec={spec} shape={shape} />}
+      {shape.type === 'propeller' &&
+        (shape.variant === 'mustang' ? (
+          <MustangModel key={spec.id} spec={spec} shape={shape} />
+        ) : (
+          <PropellerModel key={spec.id} spec={spec} shape={shape} />
+        ))}
+      {shape.type === 'shuttle' && <ShuttleModel key={spec.id} spec={spec} shape={shape} />}
       <Cockpit spec={spec} />
     </>
   )
@@ -1286,7 +1294,7 @@ const NOSE_HINGE_Z = -25.2
 const NOSE_HINGE_Y = -1.1
 const NOSE_DROOP = (12.5 * Math.PI) / 180
 // Wing stations from root to tip as [x, leading edge z, trailing edge z, thickness]
-const CONCORDE_WING: [number, number, number, number][] = [
+const CONCORDE_WING: WingStation[] = [
   [1.2, -14, 24.2, 0.75],
   [2, -8, 24.2, 0.7],
   [3, -2.5, 24.2, 0.62],
@@ -1392,24 +1400,32 @@ function concordeLivery(paint: string, accent: string) {
   return texture
 }
 
+/** Spanwise wing stations from root to tip as [x, leading edge z, trailing edge z, thickness]. */
+type WingStation = [number, number, number, number]
+
 /**
- * The right half of the ogival delta wing as a solid of top and bottom skins between
- * spanwise stations. The left half mirrors it.
+ * One half of a wing as a solid of top and bottom skins between spanwise stations, thickest
+ * a third of the way back and thin at both edges. `side` -1 mirrors it to the left, and
+ * `skins` picks the top, the bottom, or both, so the two can take different paint.
  */
-function deltaWingGeometry(side: 1 | -1) {
+function wingGeometry(
+  stations: WingStation[],
+  side: 1 | -1,
+  skins: 'both' | 'top' | 'bottom' = 'both'
+) {
   const positions: number[] = []
   const quad = (a: number[], b: number[], c: number[], d: number[]) => {
     // Two triangles a-b-c and a-c-d, wound to face outward on the right half
     const order = side === 1 ? [a, b, c, a, c, d] : [a, c, b, a, d, c]
     for (const point of order) positions.push(point[0] * side, point[1], point[2])
   }
-  for (let i = 0; i < CONCORDE_WING.length - 1; i++) {
-    const [x1, le1, te1, t1] = CONCORDE_WING[i]
-    const [x2, le2, te2, t2] = CONCORDE_WING[i + 1]
-    // Thickest a third of the way back, thin at both edges
+  const signs = skins === 'both' ? [1, -1] : [skins === 'top' ? 1 : -1]
+  for (let i = 0; i < stations.length - 1; i++) {
+    const [x1, le1, te1, t1] = stations[i]
+    const [x2, le2, te2, t2] = stations[i + 1]
     const mid1 = le1 + (te1 - le1) * 0.35
     const mid2 = le2 + (te2 - le2) * 0.35
-    for (const sign of [1, -1]) {
+    for (const sign of signs) {
       const y1 = (sign * t1) / 2
       const y2 = (sign * t2) / 2
       const front = [
@@ -1436,6 +1452,17 @@ function deltaWingGeometry(side: 1 | -1) {
   return geometry
 }
 
+/** The stations between `from` and `to` metres out, cut exactly at both ends. */
+function wingSlice(stations: WingStation[], from: number, to: number): WingStation[] {
+  const at = (x: number): WingStation => {
+    const i = Math.max(0, stations.findIndex(([next]) => next >= x) - 1)
+    const [a, b] = [stations[i], stations[Math.min(i + 1, stations.length - 1)]]
+    const t = b[0] === a[0] ? 0 : (x - a[0]) / (b[0] - a[0])
+    return [x, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t]
+  }
+  return [at(from), ...stations.filter(([x]) => x > from && x < to), at(to)]
+}
+
 /** Concorde: slender body, ogival delta wing, four engines in two nacelles, and a drooping nose. */
 function ConcordeModel({ spec, shape }: { spec: AircraftSpec; shape: AirlinerShape }) {
   const airframe = useAirframe(spec, shape.paint, shape.accent)
@@ -1448,7 +1475,7 @@ function ConcordeModel({ spec, shape }: { spec: AircraftSpec; shape: AirlinerSha
         roughness: 0.35,
         metalness: 0.1
       }),
-      wings: [deltaWingGeometry(-1), deltaWingGeometry(1)],
+      wings: [wingGeometry(CONCORDE_WING, -1), wingGeometry(CONCORDE_WING, 1)],
       elevons: ELEVONS.map(([inner, outer]) =>
         plateGeometry(
           [
@@ -1999,6 +2026,741 @@ function BomberModel({ spec, shape }: { spec: AircraftSpec; shape: BomberShape }
   )
 }
 
+/** Cross-section of a lofted body: z, half width, top and bottom heights, and squareness. */
+type Section = [z: number, halfWidth: number, top: number, bottom: number, square: number]
+
+/** The section at `z`, interpolated between the two around it. */
+function sectionAt(sections: Section[], z: number): Section {
+  const i = Math.max(0, sections.findIndex(([next]) => next >= z) - 1)
+  const [a, b] = [sections[i], sections[Math.min(i + 1, sections.length - 1)]]
+  const t = b[0] === a[0] ? 0 : (z - a[0]) / (b[0] - a[0])
+  const mix = (k: 1 | 2 | 3 | 4) => a[k] + (b[k] - a[k]) * t
+  return [z, mix(1), mix(2), mix(3), mix(4)]
+}
+
+/**
+ * Skin of a body through `sections` from `from` to `to` along it. Each section is a
+ * superellipse: 2 is an ellipse, higher is squarer. `arc` limits the skin to a band of
+ * angles around the body, measured from the belly toward the right side, so stripes and
+ * a dark belly can take their own paint.
+ */
+function loftGeometry(
+  sections: Section[],
+  from: number,
+  to: number,
+  arc: [number, number] = [0, Math.PI * 2]
+) {
+  const around = 32
+  const rings = [from, ...sections.map(([z]) => z).filter(z => z > from && z < to), to]
+  const positions: number[] = []
+  for (const z of rings) {
+    const [, halfWidth, top, bottom, square] = sectionAt(sections, z)
+    const centre = (top + bottom) / 2
+    const half = (top - bottom) / 2
+    const power = 2 / square
+    for (let j = 0; j <= around; j++) {
+      const angle = arc[0] + ((arc[1] - arc[0]) * j) / around
+      const sin = Math.sin(angle)
+      const cos = Math.cos(angle)
+      positions.push(
+        halfWidth * Math.sign(sin) * Math.abs(sin) ** power,
+        centre - half * Math.sign(cos) * Math.abs(cos) ** power,
+        z
+      )
+    }
+  }
+  const index: number[] = []
+  for (let i = 0; i < rings.length - 1; i++) {
+    for (let j = 0; j < around; j++) {
+      const a = i * (around + 1) + j
+      const b = a + around + 1
+      index.push(a, a + 1, b, b, a + 1, b + 1)
+    }
+  }
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
+  geometry.setIndex(index)
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+// The P-51D's fuselage from the propeller back, the belly radiator scoop, and the wing
+const MUSTANG_BODY: Section[] = [
+  [-3.45, 0.3, 0.28, -0.34, 2],
+  [-3, 0.4, 0.4, -0.48, 2.2],
+  [-2, 0.43, 0.45, -0.56, 2.3],
+  [-0.6, 0.43, 0.48, -0.62, 2.3],
+  [0.6, 0.42, 0.44, -0.62, 2.3],
+  [2.4, 0.34, 0.36, -0.52, 2.2],
+  [4.2, 0.22, 0.3, -0.34, 2.1],
+  [5.4, 0.12, 0.26, -0.12, 2],
+  [5.98, 0.03, 0.22, 0.08, 2]
+]
+const MUSTANG_SCOOP: Section[] = [
+  [0.25, 0.3, -0.6, -0.98, 2.4],
+  [1.2, 0.34, -0.55, -1.03, 2.4],
+  [2.4, 0.3, -0.48, -0.9, 2.4],
+  [3.4, 0.08, -0.4, -0.5, 2]
+]
+const MUSTANG_WING: WingStation[] = [
+  [0.3, -0.78, 1.95, 0.4],
+  [1.8, -0.64, 1.68, 0.32],
+  [3.6, -0.44, 1.32, 0.22],
+  [5.2, -0.25, 0.98, 0.13],
+  [5.64, -0.12, 0.75, 0.05]
+]
+// Flaps inboard and ailerons outboard along the trailing edge: from x, to x, chord
+const MUSTANG_SURFACES: [number, number, number][] = [
+  [0.45, 2.65, 0.45],
+  [2.75, 5.2, 0.38]
+]
+// Invasion stripes, white and black, five to a band: across each wing and the rear fuselage
+const STRIPES = 5
+const WING_STRIPES: [number, number] = [2, 4.25]
+const BODY_STRIPES: [number, number] = [3, 4.35]
+// Angle either side of the top of the nose that the anti-glare panel covers
+const ANTI_GLARE = 0.35
+// The Merlin turns the propeller through a 0.479 reduction gear
+const PROP_GEARING = 0.479
+
+/** Bands from `from` to `to` split into equal stripes, as [start, end, white] triples. */
+const stripes = ([from, to]: [number, number]) =>
+  Array.from({ length: STRIPES }, (_, i): [number, number, boolean] => [
+    from + ((to - from) * i) / STRIPES,
+    from + ((to - from) * (i + 1)) / STRIPES,
+    i % 2 === 0
+  ])
+
+/**
+ * P-51D Mustang: natural-metal tail-dragger with a low laminar-flow wing, the radiator
+ * scoop under the belly, a bubble canopy, a four-blade propeller, and invasion stripes.
+ */
+function MustangModel({ spec, shape }: { spec: AircraftSpec; shape: PropellerShape }) {
+  const airframe = useAirframe(spec, shape.paint, shape.accent)
+  const { paint } = airframe
+  const built = useMemo(() => {
+    const top = Math.PI
+    const stab: Outline = [
+      [0.15, 4.55],
+      [2.05, 5.15],
+      [2.05, 5.45],
+      [0.15, 5.45]
+    ]
+    const elevator: Outline = [
+      [0.15, 0],
+      [2, 0],
+      [2, 0.35],
+      [0.15, 0.5]
+    ]
+    const surface = (length: number, chord: number) =>
+      plateGeometry(
+        [
+          [0, 0],
+          [length, 0],
+          [length, chord * 0.9],
+          [0, chord]
+        ],
+        0.05
+      )
+    const wingBands = (side: 1 | -1) => {
+      const [from, to] = WING_STRIPES
+      const tip = MUSTANG_WING[MUSTANG_WING.length - 1][0]
+      return {
+        bare: [
+          wingGeometry(wingSlice(MUSTANG_WING, MUSTANG_WING[0][0], from), side),
+          wingGeometry(wingSlice(MUSTANG_WING, to, tip), side)
+        ],
+        stripes: stripes(WING_STRIPES).map(([a, b, white]) => ({
+          white,
+          geometry: wingGeometry(wingSlice(MUSTANG_WING, a, b), side)
+        }))
+      }
+    }
+    const [stripeFrom, stripeTo] = BODY_STRIPES
+    return {
+      white: new MeshStandardMaterial({ color: '#f2f1ec', roughness: 0.5 }),
+      black: new MeshStandardMaterial({ color: '#151617', roughness: 0.6 }),
+      olive: new MeshStandardMaterial({ color: '#4b4f32', roughness: 0.8 }),
+      yellow: new MeshStandardMaterial({ color: '#f2c230', roughness: 0.5 }),
+      metal: new MeshStandardMaterial({ color: shape.paint, roughness: 0.4, metalness: 0.35 }),
+      disc: new MeshStandardMaterial({
+        color: '#cfd4d8',
+        transparent: true,
+        opacity: 0.12,
+        side: DoubleSide,
+        depthWrite: false
+      }),
+      nose: [
+        loftGeometry(MUSTANG_BODY, -3.45, -0.6, [0, top - ANTI_GLARE]),
+        loftGeometry(MUSTANG_BODY, -3.45, -0.6, [top + ANTI_GLARE, top * 2])
+      ],
+      antiGlare: loftGeometry(MUSTANG_BODY, -3.45, -0.6, [top - ANTI_GLARE, top + ANTI_GLARE]),
+      body: [
+        loftGeometry(MUSTANG_BODY, -0.6, stripeFrom),
+        loftGeometry(MUSTANG_BODY, stripeTo, 4.6)
+      ],
+      bodyStripes: stripes(BODY_STRIPES).map(([a, b, white]) => ({
+        white,
+        geometry: loftGeometry(MUSTANG_BODY, a, b)
+      })),
+      tailCone: loftGeometry(MUSTANG_BODY, 4.6, 5.98),
+      scoop: loftGeometry(MUSTANG_SCOOP, 0.25, 3.4),
+      wings: [wingBands(-1), wingBands(1)],
+      stabs: [plateGeometry(mirrored(stab), 0.09), plateGeometry(stab, 0.09)],
+      elevators: [plateGeometry(mirrored(elevator), 0.05), plateGeometry(elevator, 0.05)],
+      fin: plateGeometry(
+        [
+          [0, 3.3],
+          [0.35, 4.55],
+          [1.35, 5.1],
+          [1.5, 5.3],
+          [1.5, 5.45],
+          [0, 5.45]
+        ],
+        0.1
+      ).rotateZ(QUARTER_TURN),
+      rudder: plateGeometry(
+        [
+          [0, 0],
+          [1.5, 0],
+          [1.4, 0.3],
+          [0.05, 0.55]
+        ],
+        0.06
+      ).rotateZ(QUARTER_TURN),
+      surfaces: MUSTANG_SURFACES.map(([from, to, chord]) => surface(to - from, chord))
+    }
+  }, [shape.paint])
+  useDisposal(built)
+
+  const propeller = useRef<Group>(null)
+  const blades = useRef<Group>(null)
+  const blur = useRef<Group>(null)
+  const lamp = useRef<Group>(null)
+  const gear = useRef<(Group | null)[]>([])
+  const surfaces = useRef<(Group | null)[]>([])
+  const elevators = useRef<(Group | null)[]>([])
+  const rudder = useRef<Group>(null)
+
+  useFrame((_, delta) => {
+    const { sim, pilot, wreck } = game
+    const c = pilot.controls
+    if (propeller.current && blades.current && blur.current) {
+      const spinning = game.getState().status === 'flying' ? sim.rpm * PROP_GEARING : 0
+      propeller.current.rotation.z -= (spinning / 60) * Math.PI * 2 * delta
+      blades.current.visible = spinning < 450
+      blur.current.visible = spinning > 200
+    }
+    if (lamp.current) lamp.current.visible = pilot.landingLights && !wreck.active
+    // The main legs fold inward into the wing roots, the tail wheel forward into the fuselage
+    const retract = (1 - sim.gearPosition) * QUARTER_TURN
+    gear.current.forEach((leg, i) => {
+      if (!leg) return
+      leg.visible = sim.gearPosition > 0.03
+      if (i === 0) leg.rotation.x = retract
+      else leg.rotation.z = i === 1 ? retract : -retract
+    })
+    // Index 0 and 1 are the flaps, 2 and 3 the ailerons, left before right
+    surfaces.current.forEach((panel, i) => {
+      if (!panel) return
+      const right = i % 2 === 1
+      panel.rotation.x =
+        i < 2 ? sim.flapPosition * 0.87 : c.roll * AILERON_TRAVEL * (right ? -1 : 1)
+    })
+    for (const elevator of elevators.current) {
+      if (elevator) elevator.rotation.x = -(c.pitch + c.trim * 0.3) * ELEVATOR_TRAVEL
+    }
+    if (rudder.current) rudder.current.rotation.y = c.yaw * RUDDER_TRAVEL
+  })
+
+  const [tailWheel, leftMain, rightMain] = spec.contactPoints.map(point => point.position)
+  const trailing = (x: number) => wingSlice(MUSTANG_WING, x, x)[0][2]
+  /** A gear leg from its mount down to the wheel, which it swings around to retract. */
+  const leg = (index: number, mount: [number, number, number], bottom: Vector3, tyre: number) => {
+    const wheel: [number, number, number] = [
+      bottom.x - mount[0],
+      bottom.y + tyre - mount[1],
+      bottom.z - mount[2]
+    ]
+    return (
+      <group
+        ref={group => {
+          gear.current[index] = group
+        }}
+        position={mount}
+      >
+        <Strut from={[0, 0, 0]} to={wheel} radius={0.05} material={paint.dark} />
+        <Wheel position={wheel} radius={tyre} material={paint.dark} />
+      </group>
+    )
+  }
+  const wingPart = (side: 0 | 1) => {
+    const sign = side === 1 ? 1 : -1
+    const wing = built.wings[side]
+    const tip = MUSTANG_WING[MUSTANG_WING.length - 1]
+    const main = side === 1 ? rightMain : leftMain
+    const mountY = shape.wingY + Math.abs(main.x) * Math.sin(shape.dihedral) - 0.12
+    return (
+      <>
+        <group position={[0, shape.wingY, 0]} rotation-z={shape.dihedral * sign}>
+          {wing.bare.map(geometry => (
+            <mesh key={geometry.uuid} castShadow material={built.metal} geometry={geometry} />
+          ))}
+          {wing.stripes.map(({ white, geometry }) => (
+            <mesh
+              key={geometry.uuid}
+              castShadow
+              material={white ? built.white : built.black}
+              geometry={geometry}
+            />
+          ))}
+          <group scale={[sign, 1, 1]}>
+            {MUSTANG_SURFACES.map(([from, to], i) => {
+              const sweep = -Math.atan2(trailing(to) - trailing(from), to - from)
+              const chord = MUSTANG_SURFACES[i][2]
+              return (
+                <group key={from} position={[from, 0, trailing(from) - chord]} rotation-y={sweep}>
+                  <group
+                    ref={group => {
+                      surfaces.current[i * 2 + side] = group
+                    }}
+                  >
+                    <mesh castShadow material={built.metal} geometry={built.surfaces[i]} />
+                  </group>
+                </group>
+              )
+            })}
+          </group>
+          <mesh
+            material={side === 1 ? paint.green : paint.red}
+            position={[tip[0] * sign, 0, tip[1] + 0.3]}
+          >
+            <sphereGeometry args={[0.05, 8, 6]} />
+          </mesh>
+        </group>
+        {leg(side + 1, [main.x, mountY, main.z], main, 0.34)}
+        {side === 0 && (
+          <group ref={lamp} position={[-3.2, shape.wingY + 0.15, -0.5]}>
+            <mesh>
+              <sphereGeometry args={[0.08, 8, 6]} />
+              <meshBasicMaterial color="#fffbe6" toneMapped={false} />
+            </mesh>
+          </group>
+        )}
+      </>
+    )
+  }
+
+  return (
+    <group ref={airframe.root}>
+      <Part airframe={airframe} name="fuselage">
+        {built.body.map(geometry => (
+          <mesh key={geometry.uuid} castShadow material={built.metal} geometry={geometry} />
+        ))}
+        {built.bodyStripes.map(({ white, geometry }) => (
+          <mesh
+            key={geometry.uuid}
+            castShadow
+            material={white ? built.white : built.black}
+            geometry={geometry}
+          />
+        ))}
+        <mesh castShadow material={built.metal} geometry={built.scoop} />
+        {/* Radiator intake at the front of the scoop, clear of the belly */}
+        <mesh
+          material={paint.dark}
+          position={[0, -0.79, 0.24]}
+          rotation-y={Math.PI}
+          scale={[0.27, 0.17, 1]}
+        >
+          <circleGeometry args={[1, 20]} />
+        </mesh>
+        {/* Bubble canopy, with the windscreen frame ahead of it */}
+        <mesh material={paint.glass} position={[0, 0.5, 0.42]} scale={[0.33, 0.43, 0.95]}>
+          <sphereGeometry args={[1, 24, 16]} />
+        </mesh>
+        <mesh material={paint.dark} position={[0, 0.66, -0.42]} rotation-x={-0.6}>
+          <boxGeometry args={[0.5, 0.03, 0.42]} />
+        </mesh>
+      </Part>
+
+      <Part airframe={airframe} name="nose">
+        {built.nose.map(geometry => (
+          <mesh key={geometry.uuid} castShadow material={built.metal} geometry={geometry} />
+        ))}
+        <mesh material={built.olive} geometry={built.antiGlare} />
+        {/* Six exhaust stacks a side, and the carburettor intake under the spinner */}
+        {[-1, 1].map(side =>
+          [0, 1, 2, 3, 4, 5].map(i => (
+            <mesh
+              key={`${side} ${i}`}
+              material={paint.dark}
+              position={[side * 0.43, 0.16, -2.75 + i * 0.22]}
+            >
+              <boxGeometry args={[0.08, 0.06, 0.12]} />
+            </mesh>
+          ))
+        )}
+        <mesh material={paint.dark} position={[0, -0.52, -2.85]}>
+          <boxGeometry args={[0.16, 0.1, 0.4]} />
+        </mesh>
+        <group ref={propeller} position={[0, 0.02, shape.noseZ + 0.4]}>
+          <mesh
+            castShadow
+            material={paint.accent}
+            position={[0, 0, -0.2]}
+            rotation-x={-QUARTER_TURN}
+          >
+            <coneGeometry args={[0.3, 0.45, 20]} />
+          </mesh>
+          <group ref={blades}>
+            {[0, 1, 2, 3].map(i => (
+              <group key={i} rotation-z={(i * Math.PI) / 2}>
+                <mesh
+                  castShadow
+                  material={paint.dark}
+                  position={[0, shape.propRadius / 2, 0]}
+                  rotation-y={0.35}
+                  scale={[1, 1, 0.22]}
+                >
+                  <cylinderGeometry args={[0.1, 0.12, shape.propRadius, 8]} />
+                </mesh>
+                <mesh
+                  material={built.yellow}
+                  position={[0, shape.propRadius - 0.08, 0]}
+                  rotation-y={0.35}
+                  scale={[1, 1, 0.22]}
+                >
+                  <cylinderGeometry args={[0.1, 0.1, 0.16, 8]} />
+                </mesh>
+              </group>
+            ))}
+          </group>
+          <group ref={blur}>
+            <mesh material={built.disc}>
+              <circleGeometry args={[shape.propRadius, 40]} />
+            </mesh>
+          </group>
+        </group>
+      </Part>
+
+      <Part airframe={airframe} name="leftWing">
+        {wingPart(0)}
+      </Part>
+      <Part airframe={airframe} name="rightWing">
+        {wingPart(1)}
+      </Part>
+
+      <Part airframe={airframe} name="tail">
+        <mesh castShadow material={built.metal} geometry={built.tailCone} />
+        <group position={[0, 0.2, 0]}>
+          <mesh castShadow material={built.metal} geometry={built.fin} />
+          <group ref={rudder} position={[0, 0, 5.45]}>
+            <mesh castShadow material={built.metal} geometry={built.rudder} />
+          </group>
+        </group>
+        {[0, 1].map(side => (
+          <group key={side} position={[0, 0.12, 0]}>
+            <mesh castShadow material={built.metal} geometry={built.stabs[side]} />
+            <group
+              ref={group => {
+                elevators.current[side] = group
+              }}
+              position={[0, 0, 5.45]}
+            >
+              <mesh castShadow material={built.metal} geometry={built.elevators[side]} />
+            </group>
+          </group>
+        ))}
+        {leg(0, [0, -0.3, tailWheel.z], tailWheel, 0.15)}
+      </Part>
+    </group>
+  )
+}
+
+// The orbiter's fuselage: needle-blunt nose, crew cabin, payload bay, and the wide aft body
+const SHUTTLE_BODY: Section[] = [
+  [-21.6, 0.05, -0.45, -0.75, 2],
+  [-21.1, 0.85, 0, -1.3, 2.2],
+  [-19.8, 1.65, 0.85, -1.7, 2.6],
+  [-17.8, 2.2, 1.85, -1.9, 3],
+  [-15.6, 2.5, 2.7, -1.95, 3.2],
+  [-13.6, 2.6, 2.75, -1.95, 3.5],
+  [-12.2, 2.6, 2.3, -1.95, 3.6],
+  [9.5, 2.6, 2.3, -1.95, 3.6],
+  [11, 2.75, 2.7, -1.95, 3.6],
+  [15, 2.75, 2.7, -1.75, 3.6]
+]
+// The double-delta wing: the 81° glove, then the 45° main wing out to the tip
+const SHUTTLE_WING: WingStation[] = [
+  [2.6, -7.9, 13.4, 1.4],
+  [4.5, 4.1, 13.3, 1],
+  [8, 7.6, 13, 0.6],
+  [11.9, 11.5, 12.5, 0.18]
+]
+const SHUTTLE_WING_Y = -1.3
+const SHUTTLE_DIHEDRAL = 0.061
+// Inboard and outboard elevon on each side: from x, to x
+const SHUTTLE_ELEVONS: [number, number][] = [
+  [3, 7.3],
+  [7.4, 11.6]
+]
+const ELEVON_DEPTH = 1.4
+// The split rudder's hinge line runs up the fin's trailing edge from its root
+const RUDDER_ROOT: [number, number] = [2.5, 12.9]
+const RUDDER_LEAN = Math.atan2(2.1, 8)
+const RUDDER_HINGE = Math.hypot(2.1, 8)
+// Angle either side of the belly painted with black tiles
+const TILE_ARC = 0.42 * Math.PI
+// Main engine bells as [x, y]
+const MAIN_ENGINES: [number, number][] = [
+  [0, 1.75],
+  [-1.3, -0.15],
+  [1.3, -0.15]
+]
+
+/**
+ * Space Shuttle orbiter: white tiles above, black below, a double-delta wing with elevons,
+ * three main engines and two OMS pods at the back, and a split rudder that opens as the
+ * speed brake.
+ */
+function ShuttleModel({ spec, shape }: { spec: AircraftSpec; shape: ShuttleShape }) {
+  const airframe = useAirframe(spec, shape.paint, shape.accent)
+  const { paint } = airframe
+  const built = useMemo(() => {
+    const [nose, tail] = [SHUTTLE_BODY[0][0], SHUTTLE_BODY[SHUTTLE_BODY.length - 1][0]]
+    const belly: [number, number] = [-TILE_ARC, TILE_ARC]
+    const upper: [number, number] = [TILE_ARC, Math.PI * 2 - TILE_ARC]
+    const top = Math.PI
+    const cabin = -12.2
+    return {
+      bell: new MeshStandardMaterial({
+        color: '#3a3c3f',
+        roughness: 0.35,
+        metalness: 0.7,
+        side: DoubleSide
+      }),
+      rcc: new MeshStandardMaterial({ color: '#45474a', roughness: 0.7 }),
+      noseCap: loftGeometry(SHUTTLE_BODY, nose, -21),
+      nose: {
+        belly: loftGeometry(SHUTTLE_BODY, -21, cabin, belly),
+        sides: [
+          loftGeometry(SHUTTLE_BODY, -21, cabin, [TILE_ARC, top - 0.85]),
+          loftGeometry(SHUTTLE_BODY, -21, cabin, [top + 0.85, Math.PI * 2 - TILE_ARC])
+        ],
+        // The forward windows sit in a black band across the top of the cabin
+        top: [
+          loftGeometry(SHUTTLE_BODY, -21, -18, [top - 0.85, top + 0.85]),
+          loftGeometry(SHUTTLE_BODY, -15.6, cabin, [top - 0.85, top + 0.85])
+        ],
+        windows: loftGeometry(SHUTTLE_BODY, -18, -15.6, [top - 0.85, top + 0.85])
+      },
+      body: {
+        belly: loftGeometry(SHUTTLE_BODY, cabin, tail, belly),
+        upper: loftGeometry(SHUTTLE_BODY, cabin, tail, upper)
+      },
+      wings: ([-1, 1] as const).map(side => ({
+        top: wingGeometry(SHUTTLE_WING, side, 'top'),
+        bottom: wingGeometry(SHUTTLE_WING, side, 'bottom')
+      })),
+      elevons: SHUTTLE_ELEVONS.map(([from, to]) =>
+        plateGeometry(
+          [
+            [0, 0],
+            [to - from, 0],
+            [to - from, ELEVON_DEPTH],
+            [0, ELEVON_DEPTH]
+          ],
+          0.16
+        )
+      ),
+      fin: plateGeometry(
+        [
+          [0, 5.8],
+          [8, 13.6],
+          [8, 15],
+          [0, RUDDER_ROOT[1]]
+        ],
+        0.45
+      ).rotateZ(QUARTER_TURN),
+      rudder: plateGeometry(
+        [
+          [0, 0],
+          [RUDDER_HINGE, 0],
+          [RUDDER_HINGE, 1.2],
+          [0, 1.6]
+        ],
+        0.16
+      ).rotateZ(QUARTER_TURN)
+    }
+  }, [])
+  useDisposal(built)
+
+  const elevons = useRef<(Group | null)[]>([])
+  const rudders = useRef<(Group | null)[]>([])
+  const gear = useRef<(Group | null)[]>([])
+
+  useFrame(() => {
+    const { sim, pilot } = game
+    const c = pilot.controls
+    elevons.current.forEach((elevon, i) => {
+      if (!elevon) return
+      const right = i >= SHUTTLE_ELEVONS.length
+      elevon.rotation.x =
+        -(c.pitch + c.trim * 0.3) * ELEVATOR_TRAVEL + c.roll * AILERON_TRAVEL * (right ? -1 : 1)
+    })
+    // Both rudder halves turn together to yaw, and split apart up to 49° as the speed brake
+    const yaw = c.yaw * RUDDER_TRAVEL
+    const split = sim.speedBrakePosition * 0.86
+    rudders.current.forEach((half, i) => {
+      if (half) half.rotation.y = yaw + (i === 0 ? -split : split)
+    })
+    // All three legs swing forward into their wells
+    const retract = (1 - sim.gearPosition) * QUARTER_TURN
+    for (const leg of gear.current) {
+      if (!leg) continue
+      leg.visible = sim.gearPosition > 0.03
+      leg.rotation.x = retract
+    }
+  })
+
+  const [noseWheel, leftMain, rightMain] = spec.contactPoints.map(point => point.position)
+  /** A gear leg ending in two wheels side by side. */
+  const leg = (index: number, bottom: Vector3, mountY: number, tyre: number) => {
+    const drop = bottom.y + tyre - mountY
+    return (
+      <group
+        ref={group => {
+          gear.current[index] = group
+        }}
+        position={[bottom.x, mountY, bottom.z]}
+      >
+        <Strut from={[0, 0, 0]} to={[0, drop, 0]} radius={0.17} material={paint.dark} />
+        {[-1, 1].map(side => (
+          <Wheel
+            key={side}
+            position={[side * tyre * 0.45, drop, 0]}
+            radius={tyre}
+            material={paint.dark}
+          />
+        ))}
+      </group>
+    )
+  }
+  const wingPart = (side: 0 | 1) => {
+    const sign = side === 1 ? 1 : -1
+    const trailing = (x: number) => wingSlice(SHUTTLE_WING, x, x)[0][2]
+    return (
+      <>
+        <group position={[0, SHUTTLE_WING_Y, 0]} rotation-z={SHUTTLE_DIHEDRAL * sign}>
+          <mesh castShadow material={paint.body} geometry={built.wings[side].top} />
+          <mesh castShadow material={paint.accent} geometry={built.wings[side].bottom} />
+          <group scale={[sign, 1, 1]}>
+            {SHUTTLE_ELEVONS.map(([from, to], i) => (
+              <group
+                key={from}
+                position={[from, 0, trailing(from)]}
+                rotation-y={-Math.atan2(trailing(to) - trailing(from), to - from)}
+              >
+                <group
+                  ref={group => {
+                    elevons.current[side * SHUTTLE_ELEVONS.length + i] = group
+                  }}
+                >
+                  <mesh castShadow material={paint.body} geometry={built.elevons[i]} />
+                </group>
+              </group>
+            ))}
+          </group>
+        </group>
+        {leg(side + 1, side === 1 ? rightMain : leftMain, -1.6, 0.56)}
+      </>
+    )
+  }
+
+  return (
+    <group ref={airframe.root}>
+      <Part airframe={airframe} name="fuselage">
+        <mesh castShadow material={paint.body} geometry={built.body.upper} />
+        <mesh castShadow material={paint.accent} geometry={built.body.belly} />
+        {/* Payload bay door seam */}
+        <mesh material={built.rcc} position={[0, 2.31, -1.35]}>
+          <boxGeometry args={[0.06, 0.02, 21.7]} />
+        </mesh>
+        {/* OMS pods either side of the fin, each with its engine */}
+        {[-1, 1].map(side => (
+          <group key={side} position={[side * 1.85, 2.75, 0]}>
+            <mesh castShadow material={paint.body} position={[0, 0, 11.6]} scale={[1.05, 0.9, 3.6]}>
+              <sphereGeometry args={[1, 20, 12]} />
+            </mesh>
+            <mesh material={built.bell} position={[0, 0, 15.3]} rotation-x={QUARTER_TURN}>
+              <cylinderGeometry args={[0.38, 0.18, 0.9, 14, 1, true]} />
+            </mesh>
+          </group>
+        ))}
+        {/* Base, body flap, and the three main engine bells */}
+        <mesh material={built.rcc} position={[0, 0.47, 15]}>
+          <boxGeometry args={[5.5, 4.4, 0.1]} />
+        </mesh>
+        <mesh castShadow material={paint.accent} position={[0, -1.6, 15.5]}>
+          <boxGeometry args={[5.2, 0.25, 1.9]} />
+        </mesh>
+      </Part>
+
+      <Part airframe={airframe} name="nose">
+        <mesh castShadow material={built.rcc} geometry={built.noseCap} />
+        <mesh castShadow material={paint.accent} geometry={built.nose.belly} />
+        {built.nose.sides.map(geometry => (
+          <mesh key={geometry.uuid} castShadow material={paint.body} geometry={geometry} />
+        ))}
+        {built.nose.top.map(geometry => (
+          <mesh key={geometry.uuid} castShadow material={paint.body} geometry={geometry} />
+        ))}
+        <mesh material={paint.glass} geometry={built.nose.windows} />
+        {leg(0, noseWheel, -1.9, 0.41)}
+      </Part>
+
+      <Part airframe={airframe} name="leftWing">
+        {wingPart(0)}
+      </Part>
+      <Part airframe={airframe} name="rightWing">
+        {wingPart(1)}
+      </Part>
+
+      <Part airframe={airframe} name="tail">
+        <group position={[0, RUDDER_ROOT[0], 0]}>
+          <mesh castShadow material={paint.body} geometry={built.fin} />
+          {/* The two rudder halves hinge on the fin's sloping trailing edge */}
+          <group position={[0, 0, RUDDER_ROOT[1]]} rotation-x={RUDDER_LEAN}>
+            {[-0.09, 0.09].map((x, i) => (
+              <group
+                key={x}
+                ref={group => {
+                  rudders.current[i] = group
+                }}
+                position={[x, 0, 0]}
+              >
+                <mesh castShadow material={paint.body} geometry={built.rudder} />
+              </group>
+            ))}
+          </group>
+        </group>
+        {MAIN_ENGINES.map(([x, y]) => (
+          <mesh
+            key={x}
+            castShadow
+            material={built.bell}
+            position={[x, y, 16.4]}
+            rotation-x={QUARTER_TURN}
+          >
+            <cylinderGeometry args={[1.15, 0.45, 2.8, 24, 1, true]} />
+          </mesh>
+        ))}
+      </Part>
+    </group>
+  )
+}
+
 const TRIM = new MeshStandardMaterial({ color: '#14171a', roughness: 0.9 })
 
 /**
@@ -2014,7 +2776,8 @@ function Cockpit({ spec }: { spec: AircraftSpec }) {
     frame.current.quaternion.copy(game.sim.orientation)
   })
   const { eye } = spec.camera
-  const kind = spec.shape.type
+  const { shape } = spec
+  const kind = shape.type === 'propeller' && shape.variant === 'mustang' ? 'mustang' : shape.type
   return (
     <group ref={frame}>
       {/* Drawn 2.6 times life size around the eye: it looks the same from the seat,
@@ -2041,7 +2804,7 @@ function Cockpit({ spec }: { spec: AircraftSpec }) {
             ))}
           </>
         )}
-        {(kind === 'airliner' || kind === 'bomber') && (
+        {(kind === 'airliner' || kind === 'bomber' || kind === 'shuttle') && (
           <>
             {/* Centre post between the two windscreens, side post, and the roof */}
             <mesh material={TRIM} position={[-eye.x, 0.12, -1.05]} rotation-x={0.5}>
@@ -2070,6 +2833,23 @@ function Cockpit({ spec }: { spec: AircraftSpec }) {
             <mesh material={TRIM} position={[-eye.x, 0.45, -0.3]}>
               <boxGeometry args={[3.2, 0.08, 1.4]} />
             </mesh>
+          </>
+        )}
+        {kind === 'mustang' && (
+          <>
+            {/* The long nose with its anti-glare panel, and the windscreen frame */}
+            <mesh position={[0, -0.55, -2.2]}>
+              <boxGeometry args={[0.6, 0.22, 2.6]} />
+              <meshStandardMaterial color="#4b4f32" roughness={0.8} />
+            </mesh>
+            <mesh material={TRIM} position={[0, -0.3, -0.85]}>
+              <torusGeometry args={[0.5, 0.025, 8, 28, Math.PI]} />
+            </mesh>
+            {[-0.3, 0.3].map(x => (
+              <mesh key={x} material={TRIM} position={[x, -0.12, -0.78]} rotation-x={0.5}>
+                <boxGeometry args={[0.012, 0.4, 0.012]} />
+              </mesh>
+            ))}
           </>
         )}
       </group>
