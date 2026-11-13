@@ -12,11 +12,19 @@ export const horizonShift = (height: number) => Math.min(90, height * 0.11)
 // The chase camera looks this many aircraft-distances past the nose,
 // so the runway stays visible on approach
 const CHASE_LOOK_AHEAD = 1.9
-// Radians per second the camera circles a wreck
+// Radians per second the camera circles a wreck or a bomb's blast
 const ORBIT_RATE = 0.14
+// Metres out from a bomb's blast, and up, that the camera circles it
+const BLAST_ORBIT = 200
+const BLAST_HEIGHT = 80
+// On a bomb run the chase view turns this share of the way toward the aiming cross, so the
+// cross stays above the instrument panel
+const AIM_TILT = 0.6
 const forward = new Vector3()
 const target = new Vector3()
 const goal = new Vector3()
+const look = new Vector3()
+const toAim = new Vector3()
 
 /** Drives the camera: a smoothed chase view, the pilot's seat, or a slow circle around a wreck. */
 export function CameraRig() {
@@ -25,6 +33,7 @@ export function CameraRig() {
   const size = useThree(state => state.size)
   const trail = useRef(new Vector3(0, 0, -1))
   const orbit = useRef({ angle: 0, started: false, focus: new Vector3() })
+  const tilt = useRef(0)
 
   // Shifts the view up so the horizon sits in the middle of the area above the instrument panel
   useEffect(() => {
@@ -39,24 +48,29 @@ export function CameraRig() {
   }, [camera, mode])
 
   useFrame((_, delta) => {
-    const { sim, wreck, effects } = game
+    const { sim, wreck, effects, bombs } = game
     const view = sim.spec.camera
     const circle = orbit.current
+    const blast = game.blastReplay
 
-    if (wreck.active) {
-      const wreckage = wreck.pieces[0].position
+    if (wreck.active || blast) {
+      const focus = blast ?? wreck.pieces[0].position
       if (!circle.started) {
-        // Start the circle from wherever the camera was at the moment of the crash
+        // Start the circle from wherever the camera was at the moment of the crash or blast
         circle.started = true
-        circle.angle = Math.atan2(camera.position.z - wreckage.z, camera.position.x - wreckage.x)
-        circle.focus.copy(wreckage)
+        circle.angle = Math.atan2(camera.position.z - focus.z, camera.position.x - focus.x)
+        circle.focus.copy(focus)
       }
       circle.angle += ORBIT_RATE * delta
-      circle.focus.lerp(wreckage, 1 - Math.exp(-delta * 3))
+      circle.focus.lerp(focus, 1 - Math.exp(-delta * 3))
       goal
         .set(Math.cos(circle.angle), 0, Math.sin(circle.angle))
-        .multiplyScalar(view.distance * 1.9)
-      goal.add(circle.focus).setY(Math.max(circle.focus.y, 0) + view.height * 2.2)
+        .multiplyScalar(blast ? BLAST_ORBIT : view.distance * 1.9)
+      goal
+        .add(circle.focus)
+        .setY(Math.max(circle.focus.y, 0) + (blast ? BLAST_HEIGHT : view.height * 2.2))
+      // A blast far from the aircraft needs a cut, not a long glide across the sky
+      if (blast && camera.position.distanceTo(goal) > BLAST_ORBIT * 4) camera.position.copy(goal)
       camera.position.lerp(goal, 1 - Math.exp(-delta * 1.6))
       keepAboveGround(camera.position, 2.5)
       camera.up.set(0, 1, 0)
@@ -77,6 +91,12 @@ export function CameraRig() {
       keepAboveGround(camera.position, 1.2)
       target.copy(sim.position).addScaledVector(trail.current, view.distance * CHASE_LOOK_AHEAD)
       target.y += 1
+      tilt.current += ((bombs.aiming ? AIM_TILT : 0) - tilt.current) * (1 - Math.exp(-delta * 2))
+      if (tilt.current > 0.001) {
+        look.copy(target).sub(camera.position).normalize()
+        toAim.copy(bombs.aim).sub(camera.position).normalize()
+        target.copy(camera.position).add(look.lerp(toAim, tilt.current))
+      }
       camera.up.set(0, 1, 0)
       camera.lookAt(target)
     }

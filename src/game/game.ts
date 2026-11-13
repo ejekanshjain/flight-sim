@@ -12,12 +12,20 @@ import {
   outside
 } from '../world/island'
 import { Sound } from './audio'
+import { Bombs, type Impact } from './bombs'
 import { findCollision } from './collision'
 import { Effects } from './effects'
 import { Gpws } from './gpws'
 import { type Mission, type MissionResult, MissionRunner, rememberPassed } from './missions'
 import { Navigator, planRoute } from './navigation'
 import { Pilot } from './pilot'
+import {
+  GRAPHICS_PRESETS,
+  type Graphics,
+  type GraphicsPreset,
+  loadSettings,
+  saveSettings
+} from './settings'
 import { Traffic } from './traffic'
 import { Wreck } from './wreck'
 
@@ -25,7 +33,6 @@ import { Wreck } from './wreck'
 export type Status = 'menu' | 'flying' | 'paused' | 'crashed' | 'arrived' | 'finished'
 export type CameraMode = 'chase' | 'cockpit'
 export type WindLevel = 'calm' | 'light' | 'strong'
-export type Quality = 'high' | 'low'
 export type MapSize = 'small' | 'large' | 'hidden'
 /** Sky and visibility. Cloudy adds a low overcast deck, rain adds showers, fog cuts visibility. */
 export type Weather = 'clear' | 'cloudy' | 'rain' | 'fog'
@@ -45,11 +52,11 @@ export type GameState = {
   camera: CameraMode
   wind: WindLevel
   muted: boolean
-  /** Live landing advice on screen. Remembered between visits. */
+  /** Live landing advice on screen. */
   coach: boolean
   /** The map starts small. M enlarges it, then hides it. */
   map: MapSize
-  quality: Quality
+  graphics: Graphics
   weather: Weather
   time: TimeOfDay
   crash: CrashReason | null
@@ -73,10 +80,15 @@ export const WIND_SPEEDS: Record<WindLevel, number> = { calm: 0, light: 4, stron
 /** Direction the wind blows from, in degrees clockwise from north. */
 export const WIND_FROM = 60
 
+// A bomb's blast throws debris straight up and out, carried by nothing
+const BOMB_DRIFT = new Vector3()
+const spot = new Vector3()
 // Longest physics step in seconds. Longer frames are split into several steps.
 const MAX_STEP = 1 / 120
 // Seconds the crash plays before the menu appears
 const CRASH_REPLAY = 3
+// Seconds a won bombing mission flies on, so the last explosion shows before the menu
+const BLAST_REPLAY = 4
 // A flight counts once the aircraft has climbed this high, in metres
 const AIRBORNE_HEIGHT = 30
 
@@ -103,26 +115,21 @@ class Game {
   readonly effects = new Effects()
   readonly wreck = new Wreck()
   readonly traffic = new Traffic()
+  /** The B-2's bomb bay on bombing missions; empty otherwise. */
+  readonly bombs = new Bombs()
+  // A won bombing mission waiting for its last explosion to play out
+  private won: { result: MissionResult; left: number } | null = null
+  private readonly lastBlast = new Vector3()
 
+  // Settings come back as the player left them
   private state: GameState = {
     status: 'menu',
-    camera: 'chase',
-    wind: 'calm',
-    muted: false,
-    coach: storedCoach(),
-    map: 'small',
-    quality: 'high',
-    weather: 'clear',
-    time: 'noon',
+    ...savedState(),
     crash: null,
     crashShown: false,
     arrival: null,
     mission: null,
-    missionResult: null,
-    selected: DEFAULT_AIRCRAFT,
-    departure: AIRPORTS[0],
-    destination: null,
-    flown: DEFAULT_AIRCRAFT
+    missionResult: null
   }
   private time = 0
   /** Free flight settings, kept while a mission overrides them. */
@@ -177,7 +184,7 @@ class Game {
     // A destination the new aircraft cannot land at is dropped
     const { destination } = this.state
     const keep = destination && destination !== departure && canUse(selected, destination)
-    this.setState({ selected, departure, destination: keep ? destination : null })
+    this.change({ selected, departure, destination: keep ? destination : null })
     if (this.state.status === 'menu') this.placeAtStand()
   }
 
@@ -186,14 +193,14 @@ class Game {
     const departure = AIRPORTS.find(airport => airport.name === name)
     if (!departure || !canUse(this.state.selected, departure)) return
     const destination = this.state.destination === departure ? null : this.state.destination
-    this.setState({ departure, destination })
+    this.change({ departure, destination })
     if (this.state.status === 'menu') this.placeAtStand()
   }
 
   /** Picks the airport the flight plan leads to, or none. It applies on the next start. */
   selectDestination = (name: string | null) => {
     const destination = AIRPORTS.find(airport => airport.name === name) ?? null
-    this.setState({ destination })
+    this.change({ destination })
   }
 
   /** Starts cold at the terminal gate for an airliner, or in front of the hangars otherwise. */
@@ -264,6 +271,8 @@ class Game {
     const approach = APPROACHES.find(candidate => candidate.id === mission.approach)
     if (approach) this.nav.select(approach, this.sim)
     this.missions.start(mission, this.sim)
+    this.won = null
+    this.bombs.load(mission.bombs ?? 0, mission.targets ?? [], mission.guided)
   }
 
   /** Flies the current mission again from the start. */
@@ -366,26 +375,43 @@ class Game {
     if (this.state.status === 'paused') this.setState({ status: 'flying' })
   }
 
-  setWind = (wind: WindLevel) => this.setState({ wind })
-  setQuality = (quality: Quality) => this.setState({ quality })
-  setWeather = (weather: Weather) => this.setState({ weather })
-  setTime = (time: TimeOfDay) => this.setState({ time })
-  toggleMuted = () => this.setState({ muted: !this.state.muted })
-
-  /** Shows or hides the landing coach, and remembers the choice in this browser. */
-  setCoach = (on: boolean) => {
-    this.setState({ coach: on })
-    try {
-      localStorage.setItem(COACH_KEY, on ? 'on' : 'off')
-    } catch {
-      // Without storage the choice lasts until the page closes
-    }
-  }
-  toggleCamera = () =>
-    this.setState({ camera: this.state.camera === 'chase' ? 'cockpit' : 'chase' })
+  setWind = (wind: WindLevel) => this.change({ wind })
+  setWeather = (weather: Weather) => this.change({ weather })
+  setTime = (time: TimeOfDay) => this.change({ time })
+  toggleMuted = () => this.change({ muted: !this.state.muted })
+  setCoach = (on: boolean) => this.change({ coach: on })
+  toggleCamera = () => this.change({ camera: this.state.camera === 'chase' ? 'cockpit' : 'chase' })
   toggleMap = () => {
     const next = { small: 'large', large: 'hidden', hidden: 'small' } as const
-    this.setState({ map: next[this.state.map] })
+    this.change({ map: next[this.state.map] })
+  }
+
+  /** Picks a graphics preset, which sets every graphics choice at once. */
+  setGraphicsPreset = (preset: Exclude<GraphicsPreset, 'custom'>) =>
+    this.change({ graphics: GRAPHICS_PRESETS[preset] })
+
+  /** Changes one graphics choice by hand, which leaves the presets for Custom. */
+  setGraphics = (choice: Partial<Omit<Graphics, 'preset'>>) =>
+    this.change({ graphics: { ...this.state.graphics, ...choice, preset: 'custom' } })
+
+  /** Applies a change the player made, and remembers it for the next visit. */
+  private change(patch: Partial<GameState>) {
+    this.setState(patch)
+    // During a mission, the free flight choices it set aside are the ones to keep
+    const free = { ...this.state, ...this.freeFlight }
+    saveSettings({
+      wind: free.wind,
+      weather: free.weather,
+      time: free.time,
+      muted: this.state.muted,
+      coach: this.state.coach,
+      map: this.state.map,
+      camera: this.state.camera,
+      graphics: this.state.graphics,
+      aircraft: free.selected.id,
+      departure: free.departure.code,
+      destination: free.destination?.code ?? null
+    })
   }
 
   /** Advances the game by one rendered frame of `delta` seconds. */
@@ -415,6 +441,8 @@ class Game {
         this.gpws.update(dt, this.sim, this.pilot.controls, this.nav)
         if (this.effects.emitFlight(dt, this.sim, ISLAND_GROUND)) this.sound.chirp()
         this.trackFlight()
+        for (const impact of this.bombs.update(dt, this.sim, ISLAND_GROUND)) this.blast(impact)
+        this.burnTargets(dt)
         this.checkMission(dt)
       }
     } else if (status === 'crashed') {
@@ -442,6 +470,11 @@ class Game {
       // A focused button or list already reacts to Enter
       const widget =
         event.target instanceof HTMLButtonElement || event.target instanceof HTMLSelectElement
+      // Enter releases a bomb in flight, and starts or resumes from the menus
+      if (event.code === 'Enter' && status === 'flying') {
+        if (!event.repeat) this.bombs.release(this.sim)
+        return
+      }
       if (event.code === 'Enter' && !widget) {
         if (status === 'paused') this.resume()
         else if (this.state.mission && status !== 'flying') this.retryMission()
@@ -481,19 +514,64 @@ class Game {
    */
   /** Advances the mission's objectives, and ends the flight once it passes or fails. */
   private checkMission(dt: number) {
+    if (this.won) {
+      this.won.left -= dt
+      if (this.won.left <= 0) this.finishMission(this.won.result)
+      return
+    }
     const result = this.missions.update(dt, {
       sim: this.sim,
       controls: this.pilot.controls,
       pilot: this.pilot,
       nav: this.nav,
-      parkedAt: this.parkedAirport()
+      parkedAt: this.parkedAirport(),
+      bombs: this.bombs
     })
     if (!result) return
+    if (result.passed && this.bombs.targets.length > 0) {
+      this.won = { result, left: BLAST_REPLAY }
+      return
+    }
+    this.finishMission(result)
+  }
+
+  private finishMission(result: MissionResult) {
+    this.won = null
     const { mission } = this.state
     if (result.passed && mission) rememberPassed(mission.id)
     this.pilot.releaseAll()
     this.gpws.alert = null
     this.setState({ status: 'finished', missionResult: result })
+  }
+
+  /**
+   * A bomb going off: a fireball and debris on land, spray at sea. The sound and the shake
+   * fade with distance, so a blast far below rumbles rather than rattles.
+   */
+  /** Where the winning bomb landed, while the view circles its blast before the results. */
+  get blastReplay() {
+    return this.won ? this.lastBlast : null
+  }
+
+  private blast(impact: Impact) {
+    this.lastBlast.copy(impact.at)
+    const distance = impact.at.distanceTo(this.sim.position)
+    const shake = this.effects.shake
+    if (impact.water) this.effects.splash(impact.at, 2)
+    else this.effects.explode(impact.at, BOMB_DRIFT, 3.2, true)
+    this.effects.shake = Math.max(shake, 0.7 * Math.max(0, 1 - distance / 2500))
+    if (!this.state.muted)
+      this.sound.crash(Math.max(0.15, Math.min(1, 1.2 - distance / 6000)), impact.water)
+  }
+
+  /** Destroyed targets burn, then smoulder, for the rest of the mission. */
+  private burnTargets(dt: number) {
+    const { bombs } = this
+    bombs.targets.forEach((target, i) => {
+      if (!bombs.destroyed[i]) return
+      spot.set(target.x, ISLAND_GROUND.heightAt(target.x, target.z), target.z)
+      this.effects.burn(spot, 1, dt)
+    })
   }
 
   /** The airport whose apron the aircraft is parked on, brake set and engines off. */
@@ -555,6 +633,7 @@ class Game {
   }
 
   private fly() {
+    this.bombs.clear()
     this.pilot.releaseAll()
     this.gpws.reset(this.sim)
     this.nav.load(null, this.sim)
@@ -608,14 +687,31 @@ class Game {
   }
 }
 
-const COACH_KEY = 'island-flyer-coach'
-
-/** The saved landing coach choice, on unless turned off. Storage can be blocked. */
-function storedCoach() {
-  try {
-    return localStorage.getItem(COACH_KEY) !== 'off'
-  } catch {
-    return true
+/** The settings saved on the last visit, with the aircraft and airports looked up. */
+function savedState() {
+  const saved = loadSettings()
+  const selected = HANGAR.find(spec => spec.id === saved.aircraft) ?? DEFAULT_AIRCRAFT
+  const byCode = (code: string | null) => AIRPORTS.find(airport => airport.code === code)
+  const stored = byCode(saved.departure)
+  const departure =
+    stored && canUse(selected, stored)
+      ? stored
+      : (AIRPORTS.find(airport => canUse(selected, airport)) ?? AIRPORTS[0])
+  const target = byCode(saved.destination)
+  const destination = target && target !== departure && canUse(selected, target) ? target : null
+  return {
+    camera: saved.camera,
+    wind: saved.wind,
+    muted: saved.muted,
+    coach: saved.coach,
+    map: saved.map,
+    graphics: saved.graphics,
+    weather: saved.weather,
+    time: saved.time,
+    selected,
+    departure,
+    destination,
+    flown: selected
   }
 }
 

@@ -3,7 +3,8 @@ import { Vector3 } from 'three'
 import { HANGAR, KNOT } from '../sim/aircraft'
 import { FlightSim } from '../sim/flight-sim'
 import { APPROACHES, onCentreline, pathAltitude } from '../world/approaches'
-import { AIRPORTS, fromStrip, heightAt, ISLAND_GROUND } from '../world/island'
+import { AIRPORTS, fromStrip, heightAt, ISLAND_GROUND, RANGE } from '../world/island'
+import { Bombs, bombAdvice } from './bombs'
 import { landingAdvice } from './coach'
 import { MISSIONS, MissionRunner } from './missions'
 import { Navigator } from './navigation'
@@ -159,4 +160,62 @@ test('passengers forgive a brief steep bank but not a long one', () => {
   expect(runner.warning).toBeNull()
   // Four seconds at 50° frightens them
   expect(fly(5, 0.87)).toMatchObject({ passed: false })
+})
+
+const turnTo = (from: number, to: number) => Math.atan2(Math.sin(to - from), Math.cos(to - from))
+
+test('a scripted B-2 crew passes every bombing mission', () => {
+  for (const mission of MISSIONS.filter(candidate => candidate.category === 'Bombing')) {
+    const spec = HANGAR.find(candidate => candidate.id === mission.aircraft)
+    const start = mission.start
+    if (!spec || start.kind !== 'air') throw new Error('Missing mission')
+    const sim = new FlightSim(ISLAND_GROUND, spec)
+    sim.placeInAir(
+      start.x,
+      start.altitude,
+      start.z,
+      (start.heading * Math.PI) / 180,
+      start.speed * KNOT
+    )
+    const pilot = new Pilot()
+    pilot.resetForAir(spec, sim)
+    Object.assign(pilot.controls, sim.settleOnPath(0, 0, false, CALM))
+    pilot.engage(true, sim)
+    pilot.autothrottle.speed = start.speed * KNOT
+    pilot.toggleAutothrottle(sim)
+    const nav = new Navigator()
+    const runner = new MissionRunner()
+    runner.start(mission, sim)
+    const bombs = new Bombs()
+    bombs.load(mission.bombs ?? 0, mission.targets ?? [], mission.guided)
+    const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null, bombs }
+    let result = null
+    let pressed = Number.NEGATIVE_INFINITY
+    for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
+      // Through the gates first, then point the ground track at the target, as the card says
+      const gate = mission.gates?.[runner.gates]
+      const target = bombs.targets[bombs.nearestStanding(bombs.aim.x, bombs.aim.z)]
+      const aim = gate ?? target
+      if (aim) {
+        const bearing = Math.atan2(aim.x - sim.position.x, -(aim.z - sim.position.z))
+        const off = turnTo(Math.atan2(sim.velocity.x, -sim.velocity.z), bearing)
+        pilot.autopilot.heading = gate
+          ? bearing
+          : sim.heading + Math.max(-0.4, Math.min(0.4, off * 2.5))
+      }
+      pilot.autopilot.hold = gate ? gate.y : mission.gates ? RANGE.elevation + 250 : start.altitude
+      const advice = bombAdvice(bombs, sim) ?? ''
+      // One press a second at most, as a player would
+      if (/^(On target|Lined up|In the launch zone)/.test(advice) && time - pressed > 1) {
+        bombs.release(sim)
+        pressed = time
+      }
+      pilot.update(STEP, sim, nav)
+      sim.step(STEP, pilot.controls, CALM)
+      bombs.update(STEP, sim, ISLAND_GROUND)
+      result = runner.update(STEP, context)
+    }
+    expect(sim.crash).toBeNull()
+    expect(result).toMatchObject({ passed: true })
+  }
 })

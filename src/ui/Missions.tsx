@@ -1,4 +1,5 @@
 import { type ReactNode, useCallback, useRef, useState } from 'react'
+import { bombAdvice } from '../game/bombs'
 import { type Advice, landingAdvice } from '../game/coach'
 import { game, useGame } from '../game/game'
 import {
@@ -23,14 +24,16 @@ const CATEGORY_TITLES: Record<MissionCategory, string> = {
   Tutorial: 'Tutorials',
   'Speed Run': 'Speed Runs',
   Airline: 'Airline Flights',
-  Challenge: 'Challenges'
+  Challenge: 'Challenges',
+  Bombing: 'Bombing Range'
 }
 
 const CATEGORY_NOTES: Record<MissionCategory, string> = {
   Tutorial: 'Step-by-step lessons for new pilots.',
   'Speed Run': 'Fighters against the clock.',
   Airline: 'Passengers aboard, gate to gate.',
-  Challenge: 'Harder flying when things go wrong.'
+  Challenge: 'Harder flying when things go wrong.',
+  Bombing: 'The B-2 on the Gull Point practice range.'
 }
 
 /** Mission text with keys in square brackets drawn as key caps. */
@@ -239,6 +242,7 @@ export function MissionCard({ mission }: { mission: Mission }) {
           </li>
         ))}
       </ol>
+      {mission.bombs !== undefined && <BombPanel total={mission.bombs} />}
       {alert && (
         <p
           role="alert"
@@ -246,6 +250,42 @@ export function MissionCard({ mission }: { mission: Mission }) {
         >
           <KeyText text={alert.text} />{' '}
           <span className="text-warn tabular-nums">Mission fails in {alert.left} s</span>
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** Bombs left, targets destroyed, and aiming advice, on the bombing missions. */
+function BombPanel({ total }: { total: number }) {
+  const count = useRef<HTMLSpanElement>(null)
+  const [advice, setAdvice] = useState('')
+  const shown = useRef({ text: '', at: 0 })
+  useTelemetry(
+    useCallback(
+      (sim: FlightSim) => {
+        const { bombs } = game
+        setText(
+          count.current,
+          `Bombs ${bombs.loaded} of ${total} · Targets hit ${bombs.hits} of ${bombs.targets.length}`
+        )
+        // Advice holds half a second, so it can be read while it changes
+        const now = performance.now()
+        if (now - shown.current.at < 500) return
+        const next = bombAdvice(bombs, sim) ?? ''
+        if (next === shown.current.text) return
+        shown.current = { text: next, at: now }
+        setAdvice(next)
+      },
+      [total]
+    )
+  )
+  return (
+    <div className="border-ink/25 mt-2 border-t pt-2">
+      <span ref={count} className="font-bold tabular-nums" />
+      {advice && (
+        <p className="mt-1 leading-snug">
+          <KeyText text={advice} />
         </p>
       )}
     </div>

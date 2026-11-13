@@ -11,6 +11,7 @@ import {
   type HemisphereLight,
   IcosahedronGeometry,
   InstancedMesh,
+  type Material,
   Matrix4,
   Mesh,
   MeshLambertMaterial,
@@ -23,7 +24,7 @@ import {
 } from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { game, useGame } from '../game/game'
-import { CELL, GRID, groundColor, HEIGHTS, WORLD_SIZE } from '../world/island'
+import { CELL, GRID, groundColor, HEIGHTS, heightAt, WORLD_SIZE } from '../world/island'
 import { seededRandom } from '../world/noise'
 import { TREES } from '../world/scenery'
 import {
@@ -40,6 +41,7 @@ import {
   zenith
 } from './atmosphere'
 import { billboardMaterial, makeBillboards } from './billboards'
+import { disposeAll } from './dispose'
 import { environment } from './environment'
 import {
   LOG_DEPTH_FRAGMENT,
@@ -131,7 +133,7 @@ export function Sky() {
  * The shadow follows the aircraft so it stays sharp.
  */
 export function Lights() {
-  const detailed = useGame(state => state.quality === 'high')
+  const shadows = useGame(state => state.graphics.shadows)
   const sun = useRef<DirectionalLight>(null)
   const sky = useRef<HemisphereLight>(null)
   useFrame(() => {
@@ -151,11 +153,13 @@ export function Lights() {
     <>
       <hemisphereLight ref={sky} args={['#c3d8f2', '#6a6450', 1.05]} />
       <directionalLight
+        // A new light for each shadow setting, so its shadow map is built at the new size
+        key={shadows}
         ref={sun}
         // Turning the shadow off on the light makes materials drop their shadow lookups
-        castShadow={detailed}
+        castShadow={shadows !== 'off'}
         intensity={3}
-        shadow-mapSize={[2048, 2048]}
+        shadow-mapSize={shadows === 'sharp' ? [4096, 4096] : [2048, 2048]}
         shadow-bias={-0.0004}
       >
         <orthographicCamera attach="shadow-camera" args={[-22, 22, 22, -22, 1, 900]} />
@@ -266,6 +270,28 @@ const TERRAIN_COLOR = /* glsl */ `
     float steep = 1.0 - normalize(vGroundNormal).y;
     float rock = smoothstep(0.09, 0.22, steep + (medium - 0.5) * 0.1) * smoothstep(1.0, 4.0, vGround.y);
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.18, 0.155) * (0.55 + 0.9 * fine), rock * 0.92);
+    #ifdef GROUND_DETAIL
+      float height = vGround.y;
+      // Fine detail only close by, where it can be seen without shimmering
+      float near = 1.0 - smoothstep(500.0, 2500.0, distance(vGround, cameraPosition));
+      float blades = texture2D(detailMap, ground * 0.17).b;
+      float grain = texture2D(detailMap, ground * 0.61).a;
+      // Grass: patches of greener and drier growth, and clumps up close
+      float grass = smoothstep(4.0, 9.0, height) * (1.0 - rock) * (1.0 - smoothstep(600.0, 760.0, height));
+      vec3 growth = mix(vec3(0.84, 0.97, 0.7), vec3(1.1, 1.04, 0.84), smoothstep(0.3, 0.7, broad));
+      diffuseColor.rgb *= mix(vec3(1.0), growth, grass * 0.65);
+      diffuseColor.rgb *= mix(1.0, 0.74 + 0.5 * blades * grain, grass * near * 0.85);
+      // Sand: ripples along the beaches
+      float beach = 1.0 - smoothstep(2.5, 6.0, height);
+      float ripple = sin(ground.x * 0.9 + ground.y * 0.35 + fine * 6.0) * 0.5 + 0.5;
+      diffuseColor.rgb *= mix(1.0, 0.9 + 0.18 * ripple * (0.7 + 0.6 * grain), beach * near);
+      // Rock: layered strata in the cliffs
+      float strata = sin(height * 0.45 + medium * 6.0) * 0.5 + 0.5;
+      diffuseColor.rgb *= mix(1.0, 0.72 + 0.45 * strata * (0.6 + 0.6 * blades), rock);
+      // Snow settles on the gentler slopes of the peaks, and drifts off the steep ones
+      float snow = smoothstep(860.0, 990.0, height + (medium - 0.5) * 90.0) * (1.0 - smoothstep(0.22, 0.42, steep));
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.95, 1.0) * (0.9 + 0.12 * blades), snow * 0.85);
+    #endif
   }
 `
 const TERRAIN_BUMPS = /* glsl */ `
@@ -308,6 +334,11 @@ export function Terrain() {
       }),
     [material]
   )
+  const detailed = useGame(state => state.graphics.ground)
+  useEffect(() => {
+    material.defines = detailed ? { GROUND_DETAIL: '' } : {}
+    material.needsUpdate = true
+  }, [material, detailed])
   // Rain soaks the ground: darker, with a little sheen
   const wet = useGame(state => state.weather === 'rain')
   useEffect(() => {
@@ -523,16 +554,87 @@ function buildTrees() {
   })
 }
 
+// Undergrowth stands this many metres either side of each tree, and shows this close
+const SHRUB_SPREAD = 9
+const SHRUB_RANGE = 4000
+
+/**
+ * Low bushes and young trees around every forest tree, for the Dense setting. They only
+ * fill out the woods near the camera, so they are too small and low to collide with.
+ */
+function buildUndergrowth() {
+  const random = seededRandom(13)
+  const material = new MeshLambertMaterial({ vertexColors: true })
+  const shape = broadleafGeometry()
+  const groups = new Map<string, { x: number; y: number; z: number; size: number }[]>()
+  for (const tree of TREES) {
+    for (let n = 0; n < 2; n++) {
+      const x = tree.x + (random() - 0.5) * SHRUB_SPREAD * 2
+      const z = tree.z + (random() - 0.5) * SHRUB_SPREAD * 2
+      const y = heightAt(x, z)
+      if (y < 3) continue
+      const regionX = Math.floor(((x + WORLD_SIZE / 2) / WORLD_SIZE) * FOREST_REGIONS)
+      const regionZ = Math.floor(((z + WORLD_SIZE / 2) / WORLD_SIZE) * FOREST_REGIONS)
+      const key = `${regionX} ${regionZ}`
+      const shrub = { x, y: y - 0.2, z, size: 2 + random() * 3 }
+      const group = groups.get(key)
+      if (group) group.push(shrub)
+      else groups.set(key, [shrub])
+    }
+  }
+  const matrix = new Matrix4()
+  const position = new Vector3()
+  const scale = new Vector3()
+  const turn = new Quaternion()
+  const up = new Vector3(0, 1, 0)
+  const color = new Color()
+  return [...groups.values()].map(shrubs => {
+    const mesh = new InstancedMesh(shape, material, shrubs.length)
+    shrubs.forEach((shrub, i) => {
+      turn.setFromAxisAngle(up, random() * Math.PI * 2)
+      position.set(shrub.x, shrub.y, shrub.z)
+      const wide = shrub.size * (1.1 + random() * 0.5)
+      mesh.setMatrixAt(i, matrix.compose(position, turn, scale.set(wide, shrub.size, wide)))
+      color.setHSL(0.22 + random() * 0.09, 0.36 + random() * 0.14, 0.17 + random() * 0.09)
+      mesh.setColorAt(i, color)
+    })
+    mesh.computeBoundingSphere()
+    return mesh
+  })
+}
+
+/** Undergrowth for the Dense trees setting, built the first time it is turned on. */
+function Undergrowth() {
+  const bushes = useMemo(buildUndergrowth, [])
+  // Turning Dense off frees the bushes' shape, colours, and placements
+  useEffect(
+    () => () => {
+      for (const shrubs of bushes) shrubs.dispose()
+      disposeAll(bushes)
+    },
+    [bushes]
+  )
+  useFrame(({ camera }) => {
+    for (const shrubs of bushes) {
+      const region = shrubs.boundingSphere
+      if (!region) continue
+      shrubs.visible = region.center.distanceTo(camera.position) < region.radius + SHRUB_RANGE
+    }
+  })
+  return bushes.map(shrubs => <primitive key={shrubs.uuid} object={shrubs} />)
+}
+
 export function Trees() {
   const forests = useMemo(buildTrees, [])
-  const detailed = useGame(state => state.quality === 'high')
-  // The faster setting draws every third tree
+  const dense = useGame(state => state.graphics.trees === 'more')
+  const fewer = useGame(state => state.graphics.trees === 'fewer')
+  // Fewer trees draws every third one
   useEffect(() => {
     for (const trees of forests) {
       trees.userData.total ??= trees.count
-      trees.count = detailed ? trees.userData.total : Math.ceil(trees.userData.total / 3)
+      trees.count = fewer ? Math.ceil(trees.userData.total / 3) : trees.userData.total
     }
-  }, [forests, detailed])
+  }, [forests, fewer])
   useFrame(({ camera }) => {
     for (const trees of forests) {
       const region = trees.boundingSphere
@@ -540,19 +642,27 @@ export function Trees() {
       trees.visible = region.center.distanceTo(camera.position) < region.radius + FOREST_RANGE
     }
   })
-  return forests.map(trees => <primitive key={trees.uuid} object={trees} />)
+  return (
+    <>
+      {forests.map(trees => (
+        <primitive key={trees.uuid} object={trees} />
+      ))}
+      {dense && <Undergrowth />}
+    </>
+  )
 }
 
-function buildClouds() {
+/** Cumulus clouds as soft sprites. Full clouds are more numerous, puffier, and sunlit. */
+function buildClouds(full: boolean) {
   const random = seededRandom(21)
   const puffs: { x: number; y: number; z: number; size: number; shade: number }[] = []
-  for (let cloud = 0; cloud < 340; cloud++) {
+  for (let cloud = 0; cloud < (full ? 460 : 340); cloud++) {
     const centerX = (random() - 0.5) * WORLD_SIZE
     const centerZ = (random() - 0.5) * WORLD_SIZE
     const base = 1650 + random() * 800
     const width = 500 + random() * 1000
     const tall = width * (0.28 + random() * 0.2)
-    const count = Math.round(14 + width / 55)
+    const count = Math.round((14 + width / 55) * (full ? 1.4 : 1))
     const cloudPuffs = []
     for (let i = 0; i < count; i++) {
       const angle = random() * Math.PI * 2
@@ -578,13 +688,22 @@ function buildClouds() {
     sprites.info.setXYZW(i, puff.size, random() * Math.PI * 2, 0.85, 0)
     sprites.tint.setXYZ(i, brightness * 0.95, brightness * 0.98, brightness * 1.03)
   })
-  const mesh = new Mesh(sprites.geometry, billboardMaterial(30, 260))
+  const mesh = new Mesh(sprites.geometry, billboardMaterial(30, 260, full))
   mesh.frustumCulled = false
   mesh.renderOrder = 2
   return mesh
 }
 
 export function Clouds() {
-  const clouds = useMemo(buildClouds, [])
+  const full = useGame(state => state.graphics.clouds === 'full')
+  const clouds = useMemo(() => buildClouds(full), [full])
+  // The puff texture is shared with smoke and fire, so only the cloud's own buffers go
+  useEffect(
+    () => () => {
+      clouds.geometry.dispose()
+      ;(clouds.material as Material).dispose()
+    },
+    [clouds]
+  )
   return <primitive object={clouds} />
 }

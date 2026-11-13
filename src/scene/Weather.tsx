@@ -189,7 +189,7 @@ const airflow = new Vector3()
 /** Rain streaks around the camera while it is below the cloud base in rain. */
 export function Rain() {
   const weather = useGame(state => state.weather)
-  const detailed = useGame(state => state.quality === 'high')
+  const detailed = useGame(state => state.graphics.ground)
   const rain = useMemo(() => {
     const count = detailed ? RAIN_DROPS.high : RAIN_DROPS.low
     const random = seededRandom(77)

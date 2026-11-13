@@ -443,6 +443,24 @@ export const CITIES: City[] = [
   cityBeside('Verity', 'CVY', { away: 1600, shift: -300, length: 1800, width: 1600 })
 ]
 
+/**
+ * Bombing range on the quiet east side of Gull Point: a level, cleared circle of bare
+ * earth well away from the airstrip and any houses, where the B-2 missions drop.
+ */
+export const RANGE = {
+  name: 'Gull Point Range',
+  x: 31_750,
+  z: -31_250,
+  /** Radius of the level ground, which blends into the hills over the next 450 m. */
+  radius: 650,
+  elevation: Math.round(naturalHeight(31_750, -31_250))
+}
+
+/** 1 on the level ground of the bombing range, fading to 0 over the 450 m around it. */
+function rangeBlend(x: number, z: number) {
+  return 1 - smoothstep(RANGE.radius, RANGE.radius + 450, Math.hypot(x - RANGE.x, z - RANGE.z))
+}
+
 /** 1 on ground that an airport levels, fading to 0 over the surrounding 450 m. */
 function airportBlend(airport: Airport, x: number, z: number) {
   if (Math.hypot(x - airport.x, z - airport.z) > airport.reach + 600) return 0
@@ -491,6 +509,7 @@ function buildHeights() {
       for (const city of CITIES) {
         height = lerp(height, city.elevation, 1 - smoothstep(0, 350, outside(city, x, z)))
       }
+      height = lerp(height, RANGE.elevation, rangeBlend(x, z))
       for (const airport of AIRPORTS) {
         if (Math.hypot(x - airport.x, z - airport.z) > airport.reach + APPROACH_CLEARING) continue
         height = clearApproach(airport, x, z, height)
@@ -555,9 +574,13 @@ export function forestAt(x: number, z: number) {
   return fbm(x * 0.0011 + 40, z * 0.0011 - 17, 3, 71) * 0.5 + 0.5
 }
 
-/** True where trees and houses must not stand: airports, their approach paths, and cities. */
+/**
+ * True where trees and houses must not stand: airports, their approach paths, cities, and
+ * the bombing range.
+ */
 export function isClearZone(x: number, z: number) {
   for (const city of CITIES) if (outside(city, x, z) < 60) return true
+  if (Math.hypot(x - RANGE.x, z - RANGE.z) < RANGE.radius + 200) return true
   for (const airport of AIRPORTS) {
     if (Math.hypot(x - airport.x, z - airport.z) > airport.reach + 1200) continue
     if (outside(airport.grounds, x, z) < 80) return true
@@ -580,6 +603,7 @@ const FOREST: Rgb = [0.2, 0.31, 0.16]
 const MOWN: Rgb = [0.44, 0.54, 0.29]
 const SCREE: Rgb = [0.47, 0.44, 0.4]
 const SNOW: Rgb = [0.93, 0.95, 0.98]
+const RANGE_EARTH: Rgb = [0.5, 0.42, 0.31]
 
 function mix(out: Rgb, to: Rgb, t: number) {
   out[0] = lerp(out[0], to[0], t)
@@ -611,6 +635,8 @@ export function groundColor(x: number, z: number, out: Rgb) {
   for (const airport of AIRPORTS) mown = Math.max(mown, airportBlend(airport, x, z))
   for (const city of CITIES) mown = Math.max(mown, 1 - smoothstep(0, 300, outside(city, x, z)))
   mix(out, MOWN, smoothstep(0.5, 0.9, mown))
+  // The range is bare, churned earth
+  mix(out, RANGE_EARTH, smoothstep(0.75, 1, rangeBlend(x, z)) * (0.8 + patchy * 0.2))
   mix(out, SCREE, smoothstep(480, 680, height + patchy * 60))
   mix(out, SNOW, smoothstep(900, 1010, height + patchy * 50))
   mix(out, SAND, 1 - smoothstep(1.5, 5, height))

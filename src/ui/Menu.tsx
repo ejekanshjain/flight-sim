@@ -73,7 +73,8 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
       [[',', '.'], 'Left or right brake, to turn tightly on the ground'],
       [['P'], 'Parking brake'],
       [['L'], 'Landing lights'],
-      [['-'], 'Dump fuel to land lighter: 787, A380, Concorde, and F-35A']
+      [['-'], 'Dump fuel to land lighter: 787, A380, Concorde, and F-35A'],
+      [['Enter'], 'Drop a bomb, on the B-2 bombing missions']
     ]
   },
   {
@@ -517,7 +518,7 @@ function ReferenceTabs() {
   const wind = useGame(state => state.wind)
   const muted = useGame(state => state.muted)
   const coach = useGame(state => state.coach)
-  const quality = useGame(state => state.quality)
+  const graphics = useGame(state => state.graphics)
   const weather = useGame(state => state.weather)
   const time = useGame(state => state.time)
   const [tab, setTab] = useState<'controls' | 'settings'>('controls')
@@ -588,15 +589,6 @@ function ReferenceTabs() {
             onChange={game.setTime}
           />
           <Choice
-            label="Graphics"
-            value={quality}
-            options={[
-              ['high', 'Full Detail'],
-              ['low', 'Faster']
-            ]}
-            onChange={game.setQuality}
-          />
-          <Choice
             label="Sound"
             value={muted ? 'off' : 'on'}
             options={[
@@ -617,8 +609,83 @@ function ReferenceTabs() {
             onChange={value => game.setCoach(value === 'on')}
           />
           <p className="text-sm leading-snug opacity-75">
-            Faster drops shadows and two thirds of the trees. The frame rate shows in the top bar
-            while you fly. The landing coach suggests keys on the final approach.
+            The landing coach suggests keys on the final approach. Every setting is kept for your
+            next visit.
+          </p>
+          <h3 className="border-ink/25 mt-1 border-t pt-3 font-bold">Graphics</h3>
+          <Choice
+            label="Preset"
+            value={graphics.preset}
+            options={[
+              ['low', 'Low'],
+              ['medium', 'Medium'],
+              ['high', 'High'],
+              ['ultra', 'Ultra'],
+              ...(graphics.preset === 'custom' ? [['custom', 'Custom'] as const] : [])
+            ]}
+            onChange={preset => {
+              if (preset !== 'custom') game.setGraphicsPreset(preset)
+            }}
+          />
+          <Choice
+            label="Shadows"
+            value={graphics.shadows}
+            options={[
+              ['off', 'Off'],
+              ['on', 'On'],
+              ['sharp', 'Sharp']
+            ]}
+            onChange={shadows => game.setGraphics({ shadows })}
+          />
+          <Choice
+            label="Trees"
+            value={graphics.trees}
+            options={[
+              ['fewer', 'Fewer'],
+              ['normal', 'Normal'],
+              ['more', 'Dense']
+            ]}
+            onChange={trees => game.setGraphics({ trees })}
+          />
+          <Choice
+            label="Ground"
+            value={graphics.ground ? 'detailed' : 'plain'}
+            options={[
+              ['plain', 'Plain'],
+              ['detailed', 'Detailed']
+            ]}
+            onChange={ground => game.setGraphics({ ground: ground === 'detailed' })}
+          />
+          <Choice
+            label="Clouds"
+            value={graphics.clouds}
+            options={[
+              ['simple', 'Simple'],
+              ['full', 'Full']
+            ]}
+            onChange={clouds => game.setGraphics({ clouds })}
+          />
+          <Choice
+            label="Glow"
+            value={graphics.glow ? 'on' : 'off'}
+            options={[
+              ['off', 'Off'],
+              ['on', 'On']
+            ]}
+            onChange={glow => game.setGraphics({ glow: glow === 'on' })}
+          />
+          <Choice
+            label="Resolution"
+            value={graphics.sharp ? 'full' : 'standard'}
+            options={[
+              ['standard', 'Standard'],
+              ['full', 'Full']
+            ]}
+            onChange={sharp => game.setGraphics({ sharp: sharp === 'full' })}
+          />
+          <p className="text-sm leading-snug opacity-75">
+            Lower settings run faster on older computers. The frame rate shows in the top bar while
+            you fly.
           </p>
         </div>
       )}

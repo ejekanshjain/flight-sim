@@ -3,8 +3,10 @@ import { game, useGame } from '../game/game'
 import { Aircraft } from './Aircraft'
 import { Airports } from './Airports'
 import { FOG_DENSITY, HORIZON_COLOR } from './atmosphere'
+import { Bombing } from './Bombing'
 import { CameraRig } from './CameraRig'
 import { Effects } from './Effects'
+import { Glow } from './Glow'
 import { MissionGates } from './MissionGates'
 import { AircraftLights, LandingLight, TownLights } from './NightLights'
 import { ApproachPath, RunwayLights } from './RunwayLights'
@@ -20,12 +22,14 @@ function Simulation() {
 }
 
 export function Scene() {
-  // The faster setting drops shadows and extra pixels on high-density screens
-  const detailed = useGame(state => state.quality === 'high')
+  const shadows = useGame(state => state.graphics.shadows !== 'off')
+  // Sharp draws every pixel of a high-density screen
+  const sharp = useGame(state => state.graphics.sharp)
+  const glow = useGame(state => state.graphics.glow)
   return (
     <Canvas
-      shadows={detailed}
-      dpr={detailed ? [1, 2] : 1}
+      shadows={shadows}
+      dpr={sharp ? [1, 2] : 1}
       camera={{ fov: 58, near: 1, far: 60_000 }}
       // Depth precision spread evenly from 1 m to 60 km, so the sea and gently sloping
       // beaches far away stay apart instead of flickering through each other
@@ -47,6 +51,7 @@ export function Scene() {
       <LandingLight />
       <ApproachPath />
       <MissionGates />
+      <Bombing />
       <Trees />
       <Villages />
       <Cities />
@@ -61,6 +66,7 @@ export function Scene() {
       <TrafficAircraft />
       <Aircraft />
       <Effects />
+      {glow && <Glow />}
     </Canvas>
   )
 }

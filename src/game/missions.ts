@@ -1,16 +1,18 @@
 import type { Controls, FlightSim } from '../sim/flight-sim'
 import { APPROACHES } from '../world/approaches'
-import { AIRPORTS, type Airport, heightAt, isPaved, outside } from '../world/island'
+import { AIRPORTS, type Airport, heightAt, isPaved, outside, RANGE } from '../world/island'
+import type { Bombs, Target } from './bombs'
 import type { TimeOfDay, Weather, WindLevel } from './game'
 import type { Navigator } from './navigation'
 import type { Pilot } from './pilot'
 
-export type MissionCategory = 'Tutorial' | 'Speed Run' | 'Airline' | 'Challenge'
+export type MissionCategory = 'Tutorial' | 'Speed Run' | 'Airline' | 'Challenge' | 'Bombing'
 export const MISSION_CATEGORIES: MissionCategory[] = [
   'Tutorial',
   'Speed Run',
   'Airline',
-  'Challenge'
+  'Challenge',
+  'Bombing'
 ]
 
 /** A ring to fly through, in order. Heading is in radians. */
@@ -30,6 +32,8 @@ export type MissionContext = {
   touchdown: { rate: number; paved: boolean } | null
   /** The airport the aircraft is parked at, engines off and brake set, if any. */
   parkedAt: Airport | null
+  /** The bomb bay and its targets, on bombing missions. */
+  bombs?: Bombs
 }
 
 /**
@@ -86,6 +90,11 @@ export type Mission = {
   gates?: Gate[]
   /** Seconds allowed, or none. */
   timeLimit?: number
+  /** Bombs loaded at the start, and the targets on the range they are for. */
+  bombs?: number
+  targets?: Target[]
+  /** GPS-guided bombs, which steer themselves from the launch zone around a target. */
+  guided?: boolean
   objectives: Objective[]
   /** Ways to fail. The reason can read the context, to quote a figure such as the sink rate. */
   failures?: Failure[]
@@ -225,6 +234,44 @@ const startup = (engines: number): Objective[] => [
 ]
 
 const ISLAND_RING = gatesThrough(circle(500, 500, 12_500, 8), 140, 90)
+
+/** A target on the bombing range, by its distance east and south of the range's centre. */
+const rangeTarget = (east: number, south: number, radius: number, label: string): Target => ({
+  x: RANGE.x + east,
+  z: RANGE.z + south,
+  radius,
+  label
+})
+
+/** Targets destroyed so far, and the bombs left and still falling. */
+const bombsOf = (c: MissionContext) => ({
+  hits: c.bombs?.hits ?? 0,
+  left: c.bombs?.loaded ?? 0,
+  falling: c.bombs?.falling.length ?? 0
+})
+
+/** Fails once every bomb has landed with targets still standing. */
+const outOfBombs = (needed: number): Failure => ({
+  reason:
+    'The bomb bay is empty and a target still stands. Steer until the card says you are on target, then drop.',
+  failed: c => {
+    const { hits, left, falling } = bombsOf(c)
+    return hits < needed && left === 0 && falling === 0
+  }
+})
+
+// Low-level run in from the sea to the range, 160 m above the ground
+const RANGE_RUN = gatesThrough(
+  [
+    [RANGE.x - 17_000, RANGE.z + 3500],
+    [RANGE.x - 13_500, RANGE.z + 1600],
+    [RANGE.x - 10_000, RANGE.z + 400],
+    [RANGE.x - 6500, RANGE.z],
+    [RANGE.x - 3500, RANGE.z]
+  ],
+  160,
+  150
+)
 const NORTH_TO_EAST = gatesThrough(line(airport('NGT'), airport('EMK'), 6), 180, 110)
 
 export const MISSIONS: Mission[] = [
@@ -656,6 +703,106 @@ export const MISSIONS: Mission[] = [
       { text: 'Climb above 50,000 ft.', done: c => c.sim.position.y > 50_000 * FEET },
       { text: 'Accelerate past Mach 1.7.', done: c => c.sim.mach > 1.7 }
     ]
+  },
+  {
+    id: 'first-drop',
+    title: 'First Drop',
+    category: 'Bombing',
+    aircraft: 'b2',
+    summary: 'Learn to aim and drop on a bunker at Gull Point Range.',
+    briefing:
+      'Your B-2 is 14 km west of Gull Point Range at 5,000 ft with four practice bombs. A cross on the ground shows where a bomb dropped now would land. Steer until it runs straight at the bunker and turns green, then press Enter. The bomb drops as the cross reaches the bunker.',
+    start: {
+      kind: 'air',
+      x: RANGE.x - 14_000,
+      z: RANGE.z,
+      altitude: 1524,
+      heading: 90,
+      speed: 250
+    },
+    bombs: 4,
+    targets: [rangeTarget(0, 0, 45, 'bunker')],
+    timeLimit: 600,
+    objectives: [
+      {
+        text: 'Fly toward the orange marker on the range. The cross ahead of you shows where a bomb would land.',
+        done: c => Math.hypot(c.sim.position.x - RANGE.x, c.sim.position.z - RANGE.z) < 8000
+      },
+      {
+        text: 'Steer gently until the cross turns green and the card says lined up, then press [Enter].',
+        done: c => bombsOf(c).left < 4
+      },
+      { text: 'Hit the bunker.', done: c => bombsOf(c).hits >= 1 }
+    ],
+    failures: [outOfBombs(1)]
+  },
+  {
+    id: 'night-run',
+    title: 'Night Run',
+    category: 'Bombing',
+    aircraft: 'b2',
+    summary: 'Low over the sea at night, through the gates, then two targets.',
+    briefing:
+      'Come in low over the sea in the dark, under the radar, through every gate to Gull Point Range. The last gates line up with the fuel depot and the radar, so one steady pass can destroy both. Climb after the drop: hills rise past the range. Six bombs, 8 minutes.',
+    start: {
+      kind: 'air',
+      x: RANGE.x - 21_000,
+      z: RANGE.z + 5700,
+      altitude: RANGE_RUN[0].y,
+      heading: 61,
+      speed: 300
+    },
+    time: 'night',
+    gates: RANGE_RUN,
+    bombs: 6,
+    // Both on the line of the last gates, so one straight pass can destroy them
+    targets: [rangeTarget(-180, 0, 45, 'fuel depot'), rangeTarget(220, 30, 45, 'radar')],
+    timeLimit: 480,
+    objectives: [
+      {
+        text: `Fly through all ${RANGE_RUN.length} gates. The next one glows green.`,
+        done: c => c.gates >= RANGE_RUN.length
+      },
+      {
+        text: 'Destroy the fuel depot: press [Enter] once the cross turns green.',
+        done: c => bombsOf(c).hits >= 1
+      },
+      { text: 'Destroy the radar just past it.', done: c => bombsOf(c).hits >= 2 }
+    ],
+    failures: [outOfBombs(2)]
+  },
+  {
+    id: 'stealth-strike',
+    title: 'Stealth Strike',
+    category: 'Bombing',
+    aircraft: 'b2',
+    summary: 'A guided bomb from 25,000 ft onto a bunker the size of a house.',
+    briefing:
+      'The way the B-2 really fights: high, far, and precise. From 25,000 ft, bring the aiming cross into the launch zone around the command bunker and release. The GPS-guided bomb steers itself the rest of the way down. Two bombs, 9 minutes.',
+    start: {
+      kind: 'air',
+      x: RANGE.x - 38_000,
+      z: RANGE.z - 4000,
+      altitude: 7620,
+      heading: 84,
+      speed: 400
+    },
+    bombs: 2,
+    guided: true,
+    targets: [rangeTarget(-90, 120, 12, 'command bunker')],
+    timeLimit: 540,
+    objectives: [
+      {
+        text: 'Head for Gull Point Range. The card steers you there.',
+        done: c => Math.hypot(c.sim.position.x - RANGE.x, c.sim.position.z - RANGE.z) < 15_000
+      },
+      {
+        text: 'Hold the cross in the launch zone and press [Enter] to release.',
+        done: c => bombsOf(c).left < 2
+      },
+      { text: 'Watch it fall: the bunker must go.', done: c => bombsOf(c).hits >= 1 }
+    ],
+    failures: [outOfBombs(1)]
   }
 ]
 
