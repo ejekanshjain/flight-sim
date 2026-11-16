@@ -57,6 +57,8 @@ const FLARE_DAMPING = 6
 const TAIL_MARGIN = 0.03
 const DEROTATE_RATE = -0.03
 const ROLLOUT_END = 15
+// Share added to the approach speed with the flaps stuck fully up
+const FLAPLESS_MARGIN = 0.2
 
 /** Airliners and the bomber land themselves; fighters and light aircraft hand over at 50 ft. */
 export const canAutoland = (sim: FlightSim) =>
@@ -634,6 +636,14 @@ export class Pilot {
       if (this.autothrottle.on) {
         this.autothrottle.speed = sim.spec.approachSpeed * KNOT * steps[nav.active]
       }
+    }
+    // Flaps that cannot move call for a faster approach, as the wing stalls sooner without them
+    if (this.autothrottle.on && (sim.flapsJammed || sim.hydraulicsFailed)) {
+      const stuck = 1 + (1 - sim.flapPosition) * FLAPLESS_MARGIN
+      this.autothrottle.speed = Math.max(
+        this.autothrottle.speed,
+        sim.spec.approachSpeed * KNOT * stuck
+      )
     }
     if (!nav.onFinal) {
       const fix = approach.fixes[0]

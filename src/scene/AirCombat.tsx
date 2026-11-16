@@ -15,6 +15,8 @@ import {
 } from 'three'
 import type { EnemyKind } from '../game/combat'
 import { game, useGame } from '../game/game'
+import { HANGAR } from '../sim/aircraft'
+import { flyingWingGeometry } from './Aircraft'
 
 // Lock boxes keep about this share of their distance from the camera as their size
 const BOX_SCALE = 0.03
@@ -114,6 +116,52 @@ function EnemyModel({ kind }: { kind: EnemyKind }) {
 }
 
 const ahead = new Vector3()
+const B2 = HANGAR.find(spec => spec.id === 'b2')?.shape
+
+/** The friendly B-2 on escort missions, its flying wing built like the player's. */
+function Escort() {
+  const group = useRef<Group>(null)
+  const parts = useMemo(() => {
+    if (B2?.type !== 'bomber') return null
+    return {
+      wing: [flyingWingGeometry(B2, 0, 26.2, -1), flyingWingGeometry(B2, 0, 26.2, 1)],
+      skin: new MeshStandardMaterial({
+        color: B2.paint,
+        roughness: 0.75,
+        metalness: 0.05,
+        side: DoubleSide
+      })
+    }
+  }, [])
+  useEffect(
+    () => () => {
+      for (const geometry of parts?.wing ?? []) geometry.dispose()
+      parts?.skin.dispose()
+    },
+    [parts]
+  )
+  useFrame(() => {
+    const escort = game.combat.escort
+    const model = group.current
+    if (!model) return
+    model.visible = escort !== null && (escort.alive || escort.falling)
+    if (!escort || !model.visible) return
+    model.position.copy(escort.position)
+    model.lookAt(ahead.copy(escort.position).add(escort.velocity))
+    model.rotateZ(escort.bank)
+  })
+  if (!parts) return null
+  // The wing's nose points along -Z, and lookAt turns +Z to the flight path
+  return (
+    <group ref={group}>
+      <group rotation-y={Math.PI}>
+        {parts.wing.map(geometry => (
+          <mesh key={geometry.uuid} geometry={geometry} material={parts.skin} castShadow />
+        ))}
+      </group>
+    </group>
+  )
+}
 
 /** Every enemy aircraft, turned along its flight path and banked into its turns. */
 function Enemies({ kinds }: { kinds: EnemyKind[] }) {
@@ -148,16 +196,19 @@ function Enemies({ kinds }: { kinds: EnemyKind[] }) {
   )
 }
 
-/** A square box around each live enemy: white in sight, red on the one the seeker holds. */
-function LockBoxes({ count }: { count: number }) {
+/**
+ * A square box around each live enemy: white in sight, red on the one the seeker holds. With
+ * `escort`, one more green box marks the friendly bomber.
+ */
+function LockBoxes({ count, escort }: { count: number; escort: boolean }) {
   const boxes = useRef<(Group | null)[]>([])
   const materials = useMemo(
     () =>
       Array.from(
-        { length: count },
+        { length: count + (escort ? 1 : 0) },
         () => new MeshBasicMaterial({ depthTest: false, transparent: true, toneMapped: false })
       ),
-    [count]
+    [count, escort]
   )
   useEffect(
     () => () => {
@@ -184,6 +235,17 @@ function LockBoxes({ count }: { count: number }) {
       materials[i].color.set(locked ? '#ff3b30' : '#ffffff')
       materials[i].opacity = locked ? 1 : 0.75
     })
+    const friend = combat.escort
+    const box = boxes.current[count]
+    if (!escort || !box) return
+    box.visible = friend?.alive === true
+    if (!friend?.alive) return
+    box.position.copy(friend.position)
+    box.quaternion.copy(camera.quaternion)
+    box.scale.setScalar(Math.max(70, box.position.distanceTo(camera.position) * BOX_SCALE))
+    // Green, turning amber once it has taken a hit
+    materials[count].color.set(friend.hits > 0 ? '#ffb020' : '#34c759')
+    materials[count].opacity = 0.85
   })
   return (
     <>
@@ -246,15 +308,21 @@ function Missiles() {
   return <primitive object={mesh} />
 }
 
-/** Enemy aircraft, their lock boxes, and missiles, on air combat missions. */
+/** Enemy aircraft in every wave, the escort, their boxes, and missiles, on air combat missions. */
 export function AirCombat() {
   const mission = useGame(state => state.mission)
-  const kinds = useMemo(() => (mission?.enemies ?? []).map(enemy => enemy.kind), [mission])
+  // Waves join the fight in order, so their enemies follow the first ones
+  const kinds = useMemo(
+    () => [...(mission?.enemies ?? []), ...(mission?.waves?.flat() ?? [])].map(enemy => enemy.kind),
+    [mission]
+  )
+  const escort = mission?.escort !== undefined
   if (kinds.length === 0) return null
   return (
     <>
       <Enemies kinds={kinds} />
-      <LockBoxes count={kinds.length} />
+      {escort && <Escort />}
+      <LockBoxes count={kinds.length} escort={escort} />
       <Missiles />
     </>
   )

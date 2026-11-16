@@ -587,6 +587,51 @@ export class Effects {
     }
   }
 
+  /**
+   * A belly scraping along the ground at `speed` m/s, drawn once a frame: sparks thrown up
+   * behind it and a trail of dust and grey smoke, both fading as it slows.
+   */
+  scrape(at: Vector3, velocity: Vector3, dt: number) {
+    const speed = Math.hypot(velocity.x, velocity.z)
+    const share = Math.min(1, speed / 60)
+    for (let n = Math.round(random(0.5, 1.5) * 220 * share * dt); n > 0; n--) {
+      this.add({
+        x: at.x + random(-2, 2),
+        y: at.y + 0.3,
+        z: at.z + random(-2, 2),
+        vx: velocity.x * random(0.3, 0.8) + random(-4, 4),
+        vy: random(1, 6),
+        vz: velocity.z * random(0.3, 0.8) + random(-4, 4),
+        life: random(0.3, 0.8),
+        size: random(0.3, 0.6),
+        growTo: 0.15,
+        color: SPARK,
+        fadeTo: EMBER,
+        opacity: 1,
+        glow: true,
+        drag: 1.5,
+        gravity: 9.8
+      })
+    }
+    for (let n = Math.round(random(0.5, 1.5) * 30 * share * dt); n > 0; n--) {
+      this.add({
+        x: at.x + random(-3, 3),
+        y: at.y + 0.5,
+        z: at.z + random(-3, 3),
+        vx: random(-1.5, 1.5),
+        vy: random(0.5, 2),
+        vz: random(-1.5, 1.5),
+        life: random(2.5, 4.5),
+        size: random(2, 4),
+        growTo: random(10, 18),
+        color: TYRE_SMOKE,
+        fadeTo: DUST,
+        opacity: 0.5,
+        drag: 0.8
+      })
+    }
+  }
+
   /** Burning wreckage: flames at the base and a rising column of black smoke. */
   burn(at: Vector3, strength: number, dt: number) {
     if (Math.random() < strength * 16 * dt) {

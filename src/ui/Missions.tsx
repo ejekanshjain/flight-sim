@@ -12,6 +12,7 @@ import {
 } from '../game/missions'
 import { HANGAR } from '../sim/aircraft'
 import type { FlightSim } from '../sim/flight-sim'
+import { AIRPORTS } from '../world/island'
 import { Key } from './Hud'
 import { setText, useTelemetry } from './telemetry'
 
@@ -247,8 +248,13 @@ export function MissionCard({ mission }: { mission: Mission }) {
           </li>
         ))}
       </ol>
-      {mission.enemies ? (
-        <CombatPanel total={mission.missiles ?? 0} enemies={mission.enemies.length} />
+      {mission.enemies || mission.waves ? (
+        <CombatPanel
+          total={mission.missiles ?? 0}
+          enemies={(mission.enemies?.length ?? 0) + (mission.waves?.flat().length ?? 0)}
+          base={AIRPORTS.find(airport => airport.code === mission.base)?.name}
+          escort={mission.escort !== undefined}
+        />
       ) : (
         mission.missiles !== undefined && <MissilePanel total={mission.missiles} />
       )}
@@ -269,10 +275,12 @@ export function MissionCard({ mission }: { mission: Mission }) {
 }
 
 /**
- * Missiles and flares left, enemies down, and advice: the missile warning, the lock, or
- * which way to turn.
+ * Missiles and flares left, enemies down, the escort's state, and advice: the missile
+ * warning, the lock, which way to turn, or where to rearm. `base` names the airport where
+ * the ground crew rearms you.
  */
-function CombatPanel({ total, enemies }: { total: number; enemies: number }) {
+function CombatPanel(props: { total: number; enemies: number; base?: string; escort: boolean }) {
+  const { total, enemies, base, escort } = props
   const count = useRef<HTMLSpanElement>(null)
   const [advice, setAdvice] = useState('')
   const [warning, setWarning] = useState(false)
@@ -281,12 +289,20 @@ function CombatPanel({ total, enemies }: { total: number; enemies: number }) {
     useCallback(
       (sim: FlightSim) => {
         const { combat } = game
+        const friend = combat.escort
+        const status = !escort
+          ? ''
+          : friend?.alive === false
+            ? ' · B-2 down'
+            : friend?.hits
+              ? ' · B-2 hit once'
+              : ' · B-2 unharmed'
         setText(
           count.current,
-          `Missiles ${combat.ammo} of ${total} · Flares ${combat.flaresLeft} · Down ${combat.downed} of ${enemies}`
+          `Missiles ${combat.ammo} of ${total} · Flares ${combat.flaresLeft} · Down ${combat.downed} of ${enemies}${status}`
         )
         // The missile warning shows at once; other advice holds half a second to be read
-        const next = combatAdvice(combat, sim) ?? ''
+        const next = combatAdvice(combat, sim, base) ?? ''
         const now = performance.now()
         if (next === shown.current.text) return
         if (!combat.warning && now - shown.current.at < 500) return
@@ -294,7 +310,7 @@ function CombatPanel({ total, enemies }: { total: number; enemies: number }) {
         setAdvice(next)
         setWarning(combat.warning)
       },
-      [total, enemies]
+      [total, enemies, base, escort]
     )
   )
   return (

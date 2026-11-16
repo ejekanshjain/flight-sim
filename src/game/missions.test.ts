@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { Vector3 } from 'three'
+import { Quaternion, Vector3 } from 'three'
 import { HANGAR, KNOT } from '../sim/aircraft'
 import { FlightSim } from '../sim/flight-sim'
 import { APPROACHES, onCentreline, pathAltitude } from '../world/approaches'
@@ -8,7 +8,7 @@ import { Bombs, bombAdvice } from './bombs'
 import { landingAdvice } from './coach'
 import { AirCombat } from './combat'
 import { Effects } from './effects'
-import { MISSIONS, MissionRunner } from './missions'
+import { combatSetup, MISSIONS, MissionRunner } from './missions'
 import { Navigator } from './navigation'
 import { Pilot } from './pilot'
 import { Storm } from './storm'
@@ -317,9 +317,162 @@ test('a crew that puts out both fires and ditches gently passes Double Engine Fi
   expect(result).toMatchObject({ passed: true })
 })
 
+/** An A320 with the gear up just above Coral Bay's runway, sinking at `sink` m/s and banked. */
+function overRunway(sink: number, bank: number) {
+  const spec = HANGAR.find(candidate => candidate.id === 'a320')
+  const runway = AIRPORTS.find(airport => airport.code === 'CBI')?.runways[0]
+  if (!spec || !runway) throw new Error('Missing a320 or runway')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  const { x, z } = fromStrip(runway, -runway.length / 2 + 400, 0)
+  // The lowest part of the underside half a metre above the runway
+  const belly = Math.max(...spec.hullPoints.map(point => (point.underside ? -point.position.y : 0)))
+  sim.placeInAir(x, heightAt(x, z) + belly + 0.5, z, (runway.heading * Math.PI) / 180, 70)
+  sim.orientation.multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), -bank))
+  sim.velocity.y = -sink
+  const controls = { ...new Pilot().controls, throttle: 0, gearDown: false }
+  for (let time = 0; time < 40 && !sim.crash; time += STEP) sim.step(STEP, controls, CALM)
+  return sim
+}
+
+test('a gentle wheels-up touchdown is a belly landing that slides to a stop', () => {
+  const sim = overRunway(1, 0)
+  expect(sim.crash).toBeNull()
+  expect(sim.bellied).toBe(true)
+  expect(sim.groundSpeed).toBeLessThan(1.5)
+  expect(sim.enginesRunning).toBe(0)
+  // Sinking fast or banked steeply, the airframe breaks up
+  expect(overRunway(5, 0).crash).toBe('gear-up')
+  expect(overRunway(1, 0.35).crash).not.toBeNull()
+})
+
+/**
+ * A mission's aircraft placed at its approach start the way the game does it, with the
+ * approach tuned in and the autopilot, autothrottle, and approach mode flying it.
+ */
+function onAutoland(id: string) {
+  const mission = MISSIONS.find(candidate => candidate.id === id)
+  const spec = HANGAR.find(candidate => candidate.id === mission?.aircraft)
+  const start = mission?.start
+  const approach = APPROACHES.find(candidate => candidate.id === mission?.approach)
+  if (!mission || !spec || start?.kind !== 'approach' || !approach) {
+    throw new Error(`Missing mission ${id}`)
+  }
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  const { x, z } = onCentreline(approach.end, start.distance)
+  const altitude = pathAltitude(approach.end, approach.glide, start.distance)
+  sim.placeInAir(x, altitude, z, (approach.end.heading * Math.PI) / 180, start.speed * KNOT)
+  const pilot = new Pilot()
+  pilot.resetForAir(spec, sim)
+  const flapNotch = start.flapNotch ?? 0
+  Object.assign(pilot.controls, {
+    flapNotch,
+    ...sim.settleOnPath(approach.glide, flapNotch, start.gearDown ?? false, CALM)
+  })
+  const nav = new Navigator()
+  nav.select(approach, sim)
+  const tap = (code: string) => {
+    pilot.press(code, false, sim, nav)
+    pilot.release(code)
+  }
+  for (const code of ['KeyZ', 'KeyX']) tap(code)
+  pilot.flyApproach(true, sim, nav)
+  return { mission, sim, pilot, nav, tap }
+}
+
+/** Steps an autoland mission to its end; `act` presses keys along the way. */
+function land(
+  { mission, sim, pilot, nav }: ReturnType<typeof onAutoland>,
+  act: (time: number) => void
+) {
+  const runner = new MissionRunner()
+  runner.start(mission, sim)
+  const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null }
+  let result = null
+  for (let time = 0; time < 600 && !result && !sim.crash; time += STEP) {
+    nav.update(sim)
+    pilot.update(STEP, sim, nav)
+    act(time)
+    sim.step(STEP, pilot.controls, CALM)
+    result = runner.update(STEP, context)
+  }
+  return result
+}
+
+test('a crew that sets full flap and lands on the belly passes Gear Won’t Come Down', () => {
+  const flight = onAutoland('gear-stuck')
+  const { sim, pilot, tap } = flight
+  tap('KeyG')
+  const result = land(flight, time => {
+    // One more notch of flap every 3 seconds, up to full
+    if (pilot.controls.flapNotch < 4 && Math.round(time / STEP) % 360 === 0) tap('KeyF')
+  })
+  expect(sim.crash).toBeNull()
+  expect(sim.bellied).toBe(true)
+  expect(sim.gearPosition).toBe(0)
+  expect(result).toMatchObject({ passed: true })
+})
+
+test('a crew that flies a fast flapless approach and brakes hard passes Hydraulic Failure', () => {
+  const flight = onAutoland('hydraulics')
+  const { sim, pilot, tap } = flight
+  const result = land(flight, () => {
+    if (sim.hydraulicsFailed && !pilot.controls.gearDown) tap('KeyG')
+    if (sim.hydraulicsFailed && pilot.controls.flapNotch === 0) tap('KeyF')
+    if (!sim.onGround) return
+    pilot.controls.brake = 1
+    pilot.controls.reverse = true
+  })
+  expect(sim.crash).toBeNull()
+  expect(sim.flapPosition).toBe(0)
+  expect(result).toMatchObject({ passed: true })
+})
+
+test('a crew that shuts down the leaking engine and diverts passes Fuel Leak', () => {
+  const { mission, sim, pilot } = airStart('fuel-leak')
+  const nav = new Navigator()
+  const tap = (code: string) => {
+    pilot.press(code, false, sim, nav)
+    pilot.release(code)
+  }
+  const runner = new MissionRunner()
+  runner.start(mission, sim)
+  const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null }
+  pilot.engage(true, sim)
+  pilot.autothrottle.speed = 230 * KNOT
+  pilot.toggleAutothrottle(sim)
+  // Down to 3,600 ft at a point 20 km out on the centreline, then the approach mode takes over
+  const runway = APPROACHES.find(candidate => candidate.id === 'ILS 33 EMK')
+  if (!runway) throw new Error('Missing approach')
+  const join = onCentreline(runway.end, 20_000)
+  let result = null
+  for (let time = 0; time < (mission.timeLimit ?? 900) && !result && !sim.crash; time += STEP) {
+    if (sim.fuelLeak > 0 && pilot.controls.engineSwitches[1]) tap('Digit2')
+    // Cycle the nearest runways until Eastmark's runway 33 comes up
+    if (time > 15 && nav.approach?.id !== runway.id) nav.cycle(sim, 0)
+    const toJoin = Math.hypot(join.x - sim.position.x, join.z - sim.position.z)
+    if (pilot.autopilot.lateral !== 'APP' && toJoin > 3000) {
+      pilot.autopilot.heading = Math.atan2(join.x - sim.position.x, sim.position.z - join.z)
+      pilot.autopilot.hold = 1100
+    } else if (nav.approach) pilot.flyApproach(true, sim, nav)
+    if (nav.onFinal && pilot.controls.flapNotch < 4 && Math.round(time / STEP) % 360 === 0) {
+      tap('KeyF')
+    }
+    if (nav.onFinal && !pilot.controls.gearDown) tap('KeyG')
+    nav.update(sim)
+    pilot.update(STEP, sim, nav)
+    sim.step(STEP, pilot.controls, CALM)
+    result = runner.update(STEP, context)
+  }
+  expect(sim.crash).toBeNull()
+  // One engine still running on the trickle of fuel left
+  expect(sim.enginesRunning).toBe(1)
+  expect(result).toMatchObject({ passed: true })
+})
+
 test('a scripted crew passes every missile strike mission', () => {
   // Missiles at ground targets; the air combat missions have their own test
-  for (const mission of MISSIONS.filter(candidate => candidate.missiles && !candidate.enemies)) {
+  const strikes = MISSIONS.filter(candidate => candidate.missiles && !combatSetup(candidate))
+  for (const mission of strikes) {
     const spec = HANGAR.find(candidate => candidate.id === mission.aircraft)
     const start = mission.start
     if (!spec || start.kind !== 'air') throw new Error('Missing mission')
@@ -343,11 +496,21 @@ test('a scripted crew passes every missile strike mission', () => {
     const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null, bombs }
     let result = null
     for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
-      // Fly at the nearest target, coming down to about 2,600 ft above the range
+      // Fly at the nearest target, coming down to about 2,600 ft above the range. Under the
+      // radar, skim 60 m above the highest ground ahead until the radar is down.
       const target = bombs.targets[bombs.nearestStanding(sim.position.x, sim.position.z)]
       if (target) {
         pilot.autopilot.heading = Math.atan2(target.x - sim.position.x, sim.position.z - target.z)
-        pilot.autopilot.hold = RANGE.elevation + 800
+      }
+      pilot.autopilot.hold = RANGE.elevation + 800
+      if (mission.id === 'under-the-radar' && !bombs.destroyed[0]) {
+        let ground = 0
+        for (let ahead = 0; ahead <= 2500; ahead += 250) {
+          const x = sim.position.x + Math.sin(sim.heading) * ahead
+          const z = sim.position.z - Math.cos(sim.heading) * ahead
+          ground = Math.max(ground, heightAt(x, z))
+        }
+        pilot.autopilot.hold = ground + 60
       }
       if (bombs.lock >= 0) bombs.fire(sim)
       pilot.update(STEP, sim, nav)
@@ -506,53 +669,71 @@ function seeded(seed: number) {
   }
 }
 
-test('a fighter pilot who turns hard and uses flares wins both air combat missions', () => {
+/**
+ * A fighter pilot for the air combat tests. Each step drops flares and breaks hard when a
+ * missile comes, otherwise chases the nearest enemy with no missile on its way yet, those
+ * hunting the escort first, and fires on a lock. Call `fly` before stepping the aircraft.
+ */
+function fighterPilot(sim: FlightSim, pilot: Pilot, combat: AirCombat, nav: Navigator) {
+  let breakUntil = -1
+  let lastFlare = -9
+  let side = 1
+  return (time: number) => {
+    if (combat.warning && time - lastFlare > 1.2) {
+      combat.dropFlares(sim)
+      lastFlare = time
+      breakUntil = time + 3
+      side = -side
+    }
+    const free = combat.enemies.filter(
+      enemy => enemy.alive && !combat.missiles.some(missile => missile.target === enemy)
+    )
+    const distance = (enemy: (typeof free)[number]) =>
+      enemy.position.distanceTo(sim.position) - (enemy.prey === 'escort' ? 20_000 : 0)
+    const nearest = free.sort((a, b) => distance(a) - distance(b))[0]
+    if (time < breakUntil) pilot.autopilot.heading = sim.heading + side * 1.2
+    else if (nearest) {
+      const lead = nearest.position.clone().addScaledVector(nearest.velocity, 2)
+      pilot.autopilot.heading = Math.atan2(lead.x - sim.position.x, sim.position.z - lead.z)
+      pilot.autopilot.hold = Math.max(1200, nearest.position.y)
+    }
+    if (combat.lock >= 0) combat.fire(sim)
+    pilot.update(STEP, sim, nav)
+    // Bank up to 77° toward the chosen heading and slow toward 380 kt in a hard turn.
+    // Below 1,500 ft, bank no more than 45° so the turn does not sink into the hills.
+    const track = Math.atan2(sim.velocity.x, -sim.velocity.z)
+    const error = turnFrom(track, pilot.autopilot.heading)
+    const most = sim.altitudeAgl < 460 ? 0.8 : 1.35
+    const bank = Math.max(-most, Math.min(most, error * 3))
+    pilot.controls.roll = limit((bank - sim.bank) * 1.5 + sim.angularVelocity.z * 0.3)
+    const slow = sim.indicatedAirspeed / KNOT > 380 ? 0 : 0.9
+    pilot.controls.throttle = Math.abs(error) > 0.5 ? slow : 1
+  }
+}
+
+test('a fighter pilot who turns hard and uses flares wins every air combat mission in the air', () => {
   const random = Math.random
   Math.random = seeded(7)
   try {
-    for (const mission of MISSIONS.filter(candidate => candidate.enemies)) {
+    const fights = MISSIONS.filter(
+      candidate => combatSetup(candidate) && candidate.start.kind === 'air'
+    )
+    expect(fights.map(mission => mission.id)).toContain('escort')
+    for (const mission of fights) {
       const { sim, pilot } = airStart(mission.id)
       pilot.engage(true, sim)
       const combat = new AirCombat()
-      combat.load(mission.enemies ?? [], mission.missiles ?? 0, mission.flares ?? 0)
+      const setup = combatSetup(mission)
+      if (setup) combat.load(setup)
       const effects = new Effects()
       const nav = new Navigator()
+      const fly = fighterPilot(sim, pilot, combat, nav)
       const runner = new MissionRunner()
       runner.start(mission, sim)
       const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null, combat }
       let result = null
-      let breakUntil = -1
-      let lastFlare = -9
-      let side = 1
       for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
-        // Flares and a hard break when a missile comes; otherwise chase an enemy with no
-        // missile on its way yet, leading it a little
-        if (combat.warning && time - lastFlare > 1.2) {
-          combat.dropFlares(sim)
-          lastFlare = time
-          breakUntil = time + 3
-          side = -side
-        }
-        const free = combat.enemies.filter(
-          enemy => enemy.alive && !combat.missiles.some(missile => missile.target === enemy)
-        )
-        const distance = (enemy: (typeof free)[number]) => enemy.position.distanceTo(sim.position)
-        const nearest = free.sort((a, b) => distance(a) - distance(b))[0]
-        if (time < breakUntil) pilot.autopilot.heading = sim.heading + side * 1.2
-        else if (nearest) {
-          const lead = nearest.position.clone().addScaledVector(nearest.velocity, 2)
-          pilot.autopilot.heading = Math.atan2(lead.x - sim.position.x, sim.position.z - lead.z)
-          pilot.autopilot.hold = Math.max(800, nearest.position.y)
-        }
-        if (combat.lock >= 0) combat.fire(sim)
-        pilot.update(STEP, sim, nav)
-        // Bank up to 77° toward the chosen heading and slow toward 380 kt in a hard turn
-        const track = Math.atan2(sim.velocity.x, -sim.velocity.z)
-        const error = turnFrom(track, pilot.autopilot.heading)
-        const bank = Math.max(-1.35, Math.min(1.35, error * 3))
-        pilot.controls.roll = limit((bank - sim.bank) * 1.5 + sim.angularVelocity.z * 0.3)
-        const slow = sim.indicatedAirspeed / KNOT > 380 ? 0 : 0.9
-        pilot.controls.throttle = Math.abs(error) > 0.5 ? slow : 1
+        fly(time)
         sim.step(STEP, pilot.controls, CALM)
         for (const event of combat.update(STEP, sim, ISLAND_GROUND, effects)) {
           if (event.kind === 'hit') sim.crash = 'missile'
@@ -562,6 +743,79 @@ test('a fighter pilot who turns hard and uses flares wins both air combat missio
       expect(sim.crash).toBeNull()
       expect(result).toMatchObject({ passed: true })
     }
+  } finally {
+    Math.random = random
+  }
+})
+
+test('a pilot who lands to rearm between waves shoots down all three in Ace in a Day', () => {
+  const random = Math.random
+  Math.random = seeded(11)
+  try {
+    const mission = MISSIONS.find(candidate => candidate.id === 'ace-in-a-day')
+    const spec = HANGAR.find(candidate => candidate.id === 'f16')
+    const setup = mission && combatSetup(mission)
+    const runway = AIRPORTS.find(airport => airport.code === 'EMK')?.runways[0]
+    if (!mission || !spec || !setup || !runway) throw new Error('Missing mission')
+    const course = (runway.heading * Math.PI) / 180
+    const elevation = heightAt(runway.x, runway.z)
+    const sim = new FlightSim(ISLAND_GROUND, spec)
+    const start = fromStrip(runway, -runway.length / 2 + 150, 0)
+    sim.placeOnGround(start.x, start.z, course)
+    const pilot = new Pilot()
+    pilot.resetForGround(sim, false)
+    const combat = new AirCombat()
+    combat.load(setup)
+    const effects = new Effects()
+    const nav = new Navigator()
+    const fly = fighterPilot(sim, pilot, combat, nav)
+    const runner = new MissionRunner()
+    runner.start(mission, sim)
+    const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null, combat }
+    const enemies = setup.waves?.flat().length ?? 0
+    // Takeoffs and approaches are not what this tests: the pilot appears 8,000 ft over the
+    // base, or 3 m above the runway on short final, sinking gently with the gear down
+    const climbOut = () => {
+      sim.placeInAir(runway.x, elevation + 2500, runway.z, course, 420 * KNOT)
+      pilot.resetForAir(spec, sim)
+      Object.assign(pilot.controls, sim.settleOnPath(0, 0, false, CALM))
+      pilot.engage(true, sim)
+    }
+    const shortFinal = () => {
+      const { x, z } = fromStrip(runway, -runway.length / 2 + 300, 0)
+      const height = elevation + spec.restHeight + 3
+      sim.placeInAir(x, height, z, course, spec.approachSpeed * KNOT)
+      pilot.resetForAir(spec, sim)
+      Object.assign(pilot.controls, sim.settleOnPath(1 * DEGREE, 0, true, CALM))
+      pilot.controls.gearDown = true
+      pilot.controls.throttle = 0
+    }
+    let result = null
+    let landings = 0
+    for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
+      const waveDown = combat.alive === 0 && (combat.awaitingRearm || combat.downed === enemies)
+      const empty = combat.ammo === 0 && !combat.missiles.some(missile => missile.fromPlayer)
+      if (sim.onGround) {
+        // Brake to a stop and wait for the ground crew, then go again
+        pilot.controls.brake = 1
+        pilot.controls.throttle = 0
+        if (combat.rearm === 0 && !combat.awaitingRearm && combat.downed < enemies) {
+          if (combat.ammo > 0 && sim.groundSpeed < 1.5) climbOut()
+        }
+      } else if (pilot.autopilot.on && (waveDown || (empty && combat.alive > 0))) {
+        shortFinal()
+        landings++
+      } else if (pilot.autopilot.on) fly(time)
+      sim.step(STEP, pilot.controls, CALM)
+      for (const event of combat.update(STEP, sim, ISLAND_GROUND, effects)) {
+        if (event.kind === 'hit') sim.crash = 'missile'
+      }
+      result = runner.update(STEP, context)
+    }
+    expect(sim.crash).toBeNull()
+    expect(result).toMatchObject({ passed: true })
+    expect(combat.downed).toBe(9)
+    expect(landings).toBeGreaterThanOrEqual(3)
   } finally {
     Math.random = random
   }

@@ -110,14 +110,15 @@ function configure(sim: FlightSim, pilot: Pilot, height: number): Advice | null 
           tone: 'status'
         }
       : { text: `Slow below ${limit} knots for the ${what}: hold [S].`, tone: 'fix' }
-  if (spec.retractableGear && !controls.gearDown) {
+  // Gear stuck up or flaps that cannot move are not worth asking for
+  if (spec.retractableGear && !controls.gearDown && !sim.gearStuck) {
     if (spec.gearSpeed === null || knots < spec.gearSpeed - 5) {
       return { text: 'Lower the gear: press [G].', tone: 'fix' }
     }
     return slow(spec.gearSpeed, 'gear')
   }
   const notches = spec.autoFlaps ? 0 : spec.flapLabels.length - 1
-  if (controls.flapNotch >= notches) return null
+  if (controls.flapNotch >= notches || sim.flapsJammed || sim.hydraulicsFailed) return null
   // The limit for the next flap setting
   const limit = spec.flapSpeeds[controls.flapNotch]
   const what = spec.flapName === 'Nose' ? 'Lower the nose further' : 'More flaps'

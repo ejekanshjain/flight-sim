@@ -43,7 +43,11 @@ const LAMP =
 const WARNING = `${LAMP} data-[on=true]:bg-warn data-[on=true]:text-white`
 const NOTICE = `${LAMP} data-[on=true]:bg-amber data-[on=true]:text-ink`
 
-/** Warning lamps. Each lights only while its condition holds, and only with power on. */
+/**
+ * Warning lamps. Each lights only while its condition holds, and only with power on. Lamps
+ * for a mission's failures and for air combat stay out of the row until they apply, so it
+ * fits the screen.
+ */
 function Annunciators({ spec }: { spec: AircraftSpec }) {
   const lamps = useRef<(HTMLSpanElement | null)[]>([])
   const shown = useMemo(
@@ -60,6 +64,8 @@ function Annunciators({ spec }: { spec: AircraftSpec }) {
     useCallback(
       (sim: FlightSim, controls: Controls) => {
         shown.forEach((lamp, i) => {
+          const element = lamps.current[i]
+          if (element && lamp.present) element.hidden = !lamp.present(sim)
           const on =
             lamp.label === 'NO POWER' ? !sim.powered : sim.powered && lamp.on(sim, controls)
           light(lamps.current[i], on)
@@ -89,19 +95,49 @@ type Lamp = {
   label: string
   kind: 'warning' | 'notice'
   on: (sim: FlightSim, controls: Controls) => boolean
+  /** Whether the lamp belongs in the row at all, for failures only a mission brings. */
+  present?: (sim: FlightSim) => boolean
 }
 
 const LAMPS: Lamp[] = [
   { label: 'STALL', kind: 'warning', on: sim => sim.stallWarning },
   { label: 'FIRE', kind: 'warning', on: sim => sim.engines.some(engine => engine.fire) },
+  {
+    label: 'FUEL LEAK',
+    kind: 'warning',
+    on: sim => sim.fuelLeak > 0,
+    present: sim => sim.fuelLeak > 0
+  },
+  {
+    label: 'HYD FAIL',
+    kind: 'warning',
+    on: sim => sim.hydraulicsFailed,
+    present: sim => sim.hydraulicsFailed
+  },
+  // The lever is down but the gear stays in its bay
+  {
+    label: 'GEAR UNSAFE',
+    kind: 'warning',
+    on: (sim, controls) => sim.gearStuck && controls.gearDown && !sim.onGround,
+    present: sim => sim.gearStuck
+  },
   // An enemy missile homes on the aircraft
-  { label: 'MISSILE', kind: 'warning', on: () => game.combat.warning },
+  {
+    label: 'MISSILE',
+    kind: 'warning',
+    on: () => game.combat.warning,
+    present: () => game.combat.active
+  },
   {
     // Low, slow, throttled back, and the wheels are still up
     label: 'GEAR UP',
     kind: 'warning',
     on: (sim, controls) =>
-      sim.gearPosition < 1 && !sim.onGround && sim.altitudeAgl < 150 && controls.throttle < 0.4
+      sim.gearPosition < 1 &&
+      !sim.onGround &&
+      sim.altitudeAgl < 150 &&
+      controls.throttle < 0.4 &&
+      !(sim.gearStuck && controls.gearDown)
   },
   {
     label: 'OVERSPEED',
@@ -512,6 +548,9 @@ function switches(sim: FlightSim, controls: Controls) {
     // One digit per engine, such as '10' while engine 1 burns
     fires: sim.engines.map(engine => (engine.fire ? 1 : 0)).join(''),
     ditched: sim.ditched,
+    bellied: sim.bellied,
+    leaking: sim.fuelLeak > 0,
+    hydraulics: sim.hydraulicsFailed,
     modes: autopilot.on ? `${autopilot.lateral} ${autopilot.vertical}` : '',
     leg: game.nav.leg,
     approach: game.nav.approach?.id ?? '',
@@ -795,10 +834,16 @@ function Notices({ spec }: { spec: AircraftSpec }) {
         if (!was) return
         const several = spec.engineCount > 1
         let notice = ''
-        if (now.gear !== was.gear) notice = now.gear ? 'Landing gear down' : 'Landing gear up'
-        else if (now.flaps !== was.flaps) notice = `${spec.flapName} ${spec.flapLabels[now.flaps]}`
-        else if (now.airbrake !== was.airbrake) {
+        if (now.gear !== was.gear) {
+          if (now.gear && sim.gearStuck) notice = 'Gear lever down, but the gear stays up'
+          else notice = now.gear ? 'Landing gear down' : 'Landing gear up'
+        } else if (now.flaps !== was.flaps) {
+          notice = now.hydraulics
+            ? 'No hydraulics: the flaps do not move'
+            : `${spec.flapName} ${spec.flapLabels[now.flaps]}`
+        } else if (now.airbrake !== was.airbrake) {
           if (spec.speedBrakeDrag === 0) notice = 'This aircraft has no airbrake'
+          else if (now.hydraulics) notice = 'No hydraulics: the airbrake does not move'
           else notice = now.airbrake ? 'Airbrake open' : 'Airbrake closed'
         } else if (now.reverse !== was.reverse) {
           if (spec.reverseThrust === 0) notice = 'This aircraft has no thrust reversers'
@@ -853,6 +898,12 @@ function Notices({ spec }: { spec: AircraftSpec }) {
           else if (out.length > 0) notice = `Engine ${out.join(' and ')} fire out`
         } else if (now.ditched && !was.ditched) {
           notice = 'Ditched: the aircraft is afloat'
+        } else if (now.bellied && !was.bellied) {
+          notice = 'Belly landing: sliding to a stop'
+        } else if (now.leaking && !was.leaking) {
+          notice = 'Fuel leak: the fuel is falling faster than the engines burn it'
+        } else if (now.hydraulics && !was.hydraulics) {
+          notice = 'Hydraulic failure: no flaps, airbrake, spoilers, or autobrake'
         } else if (now.overspeed && !was.overspeed) {
           // High up the Mach limit comes first. Low down, thick air strains the airframe.
           notice =

@@ -1754,7 +1754,7 @@ function bomberEdges(outline: [number, number][], x: number) {
  * One side of the flying wing between two distances out, from the outline and the
  * stations' thickness: deepest a third of the way back, thin at both edges.
  */
-function flyingWingGeometry(shape: BomberShape, from: number, to: number, side: 1 | -1) {
+export function flyingWingGeometry(shape: BomberShape, from: number, to: number, side: 1 | -1) {
   const positions: number[] = []
   const quad = (a: number[], b: number[], c: number[], d: number[]) => {
     const order = side === 1 ? [a, b, c, a, c, d] : [a, c, b, a, d, c]

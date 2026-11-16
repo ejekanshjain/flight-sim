@@ -11,11 +11,17 @@ import {
   RANGE
 } from '../world/island'
 import type { Bombs, Target } from './bombs'
-import { AIR_LOCK_RANGE, type AirCombat, type EnemySpawn } from './combat'
+import {
+  AIR_LOCK_RANGE,
+  type AirCombat,
+  type CombatSetup,
+  type EnemySpawn,
+  type EscortSpawn
+} from './combat'
 import type { TimeOfDay, Weather, WindLevel } from './game'
 import type { Navigator } from './navigation'
 import type { Pilot } from './pilot'
-import type { Microburst } from './storm'
+import { type Microburst, STORM_CELLS } from './storm'
 
 export type MissionCategory =
   | 'Tutorial'
@@ -134,6 +140,12 @@ export type Mission = {
   /** Enemy aircraft in the air, and flares to decoy their missiles. */
   enemies?: EnemySpawn[]
   flares?: number
+  /** Later waves of enemies. Each comes once the one before is down. */
+  waves?: EnemySpawn[][]
+  /** A friendly bomber to protect from the enemies hunting it. */
+  escort?: EscortSpawn
+  /** Airport where you stop on a runway to refuel and reload. The next wave waits for it. */
+  base?: string
   /** A city to bring down, and how many of its buildings must fall. */
   demolish?: { city: string; goal: number }
   objectives: Objective[]
@@ -336,6 +348,52 @@ const bomber = (x: number, z: number): EnemySpawn => ({
 })
 // A bomber this close to Coral Bay has reached it
 const DEFENDED = 6000
+// The escorted B-2 flies 52 km east to Gull Point Range at 25,000 ft
+const ESCORT_START = { x: RANGE.x - 52_000, z: RANGE.z + 6000 }
+const ESCORT_HEIGHT = 7600
+const ESCORT_COURSE = Math.atan2(RANGE.x - ESCORT_START.x, ESCORT_START.z - RANGE.z)
+const ESCORT_HEADING = Math.round(ESCORT_COURSE / DEGREES)
+/** A point `ahead` metres along the escort's track from its start, and `right` metres off it. */
+const besideEscort = (ahead: number, right: number) => ({
+  x: ESCORT_START.x + Math.sin(ESCORT_COURSE) * ahead + Math.cos(ESCORT_COURSE) * right,
+  z: ESCORT_START.z - Math.cos(ESCORT_COURSE) * ahead + Math.sin(ESCORT_COURSE) * right
+})
+// The night dogfight circles a storm cell over the sea north-east of the main island
+const NIGHT_STORM = STORM_CELLS.find(cell => cell.x > 15_000) ?? STORM_CELLS[0]
+// The radar on the range sees anything above 500 ft within its reach, given a few seconds
+const RADAR_REACH = 24_000
+const RADAR_FLOOR = 500 * FEET
+const RADAR_GRACE = 3
+/** True while the range radar still stands and the aircraft is within its reach. */
+const radarSees = (c: MissionContext) =>
+  c.bombs?.destroyed[0] === false &&
+  Math.hypot(c.sim.position.x - RANGE.x, c.sim.position.z - RANGE.z) < RADAR_REACH
+// Ace in a Day flies from Eastmark. The waves come in from the sea to its south,
+// each fighter with one missile, so the bigger waves stay survivable.
+const ACE_BASE = 'EMK'
+const ACE_FIGHTER = (x: number, z: number, altitude: number, heading: number): EnemySpawn => ({
+  kind: 'fighter',
+  x: airport(ACE_BASE).x + x,
+  z: airport(ACE_BASE).z + z,
+  altitude,
+  heading,
+  shots: 1
+})
+const ACE_WAVES: EnemySpawn[][] = [
+  [ACE_FIGHTER(7000, 11_000, 2800, 330), ACE_FIGHTER(8500, 10_000, 3200, 330)],
+  [
+    ACE_FIGHTER(-1000, 14_500, 3000, 0),
+    ACE_FIGHTER(1000, 15_000, 2600, 0),
+    ACE_FIGHTER(0, 16_500, 3400, 0)
+  ],
+  // A pincer: one pair from the south-west, one from the south-east
+  [
+    ACE_FIGHTER(-6000, 14_000, 2800, 20),
+    ACE_FIGHTER(-4500, 15_500, 3300, 20),
+    ACE_FIGHTER(7000, 12_000, 3000, 330),
+    ACE_FIGHTER(8500, 11_000, 2600, 330)
+  ]
+]
 
 /** Targets destroyed so far, and the bombs left and still falling. */
 const bombsOf = (c: MissionContext) => ({
@@ -400,6 +458,15 @@ const SHUTTLE_GATES: Gate[] = [8000, 5000, 2500].map(distance => ({
 }))
 
 const NORTH_TO_EAST = gatesThrough(line(airport('NGT'), airport('EMK'), 6), 180, 110)
+
+// The fuel leak: a 787 over the sea 27 km south-east of Eastmark, the nearest long runway.
+// Engine 2's line leaks fast, about 7 minutes of fuel, until the engine is shut down.
+const LEAK_START = { x: 44_000, z: 40_000 }
+const LEAK_AT = 8
+const LEAK_FAST = 65
+const LEAK_SLOW = 3
+// Seconds after the start that the hydraulics fail
+const FAILS_AT = 4
 
 // The storm approach: a microburst sits on the ILS to Coral Bay's runway 09, centred 4 km
 // before the threshold, where the glide path is about 700 ft above the ground. Its tailwind
@@ -809,6 +876,112 @@ export const MISSIONS: Mission[] = [
         failed: c => c.touchdown !== null && !c.touchdown.paved && !c.sim.ditched
       }
     ]
+  },
+  {
+    id: 'gear-stuck',
+    title: "Gear Won't Come Down",
+    category: 'Challenge',
+    aircraft: 'a320',
+    summary: 'The landing gear is stuck up. Land the A320 on its belly.',
+    briefing:
+      'You are on the ILS to runway 05 at Northgate in an A320, and the landing gear will not come down. The fire crews are standing by. Set full flap, fly the glide path, and touch down gently on the belly with the wings level. Then keep it straight while it slides to a stop.',
+    start: {
+      kind: 'approach',
+      approach: 'ILS 05 NGT',
+      distance: 16_000,
+      speed: 180,
+      flapNotch: 2
+    },
+    approach: 'ILS 05 NGT',
+    script: c => {
+      c.sim.gearStuck = true
+    },
+    objectives: [
+      {
+        text: 'Press [G] to lower the landing gear.',
+        done: c => c.controls.gearDown,
+        hold: 3
+      },
+      {
+        text: 'GEAR UNSAFE: the gear is stuck. Press [F] for full flap and follow the glide path, or press [T] for the autopilot.',
+        done: c => c.controls.flapNotch >= 4 && below(1000)(c)
+      },
+      {
+        text: 'Raise the nose gently in the last few feet and touch down on the runway, wings level.',
+        done: c => c.sim.bellied && c.touchdown?.paved === true
+      },
+      { text: 'Keep the wings level while the aircraft slides to a stop.', done: stopped }
+    ],
+    failures: [tooHard(500 * FPM), offRunway]
+  },
+  {
+    id: 'hydraulics',
+    title: 'Hydraulic Failure',
+    category: 'Challenge',
+    aircraft: 'b737',
+    summary: 'No flaps, no spoilers, no autobrake. Land a 737 fast on a long runway.',
+    briefing:
+      'Your 737 MAX is 18 km out from runway 15 at Eastmark when the hydraulics fail. The flaps, speed brake, spoilers, and autobrake all stop working, but the gear still drops under its own weight and the wheel brakes and reversers still work. Fly the approach 30 knots faster than normal, about 175 knots, and stop on the 3,000 m runway.',
+    start: { kind: 'approach', approach: 'ILS 15 EMK', distance: 18_000, speed: 200 },
+    approach: 'ILS 15 EMK',
+    script: c => {
+      if (c.time > FAILS_AT) c.sim.hydraulicsFailed = true
+    },
+    objectives: [
+      {
+        text: 'Hydraulics are about to fail. Watch for HYD FAIL.',
+        done: c => c.sim.hydraulicsFailed,
+        hold: 3
+      },
+      {
+        text: 'The flaps no longer move. Slow to about 175 knots, no slower, and press [G] for the gear.',
+        done: c => c.controls.gearDown && c.sim.indicatedAirspeed < 185 * 0.5144
+      },
+      {
+        text: 'Follow the glide path, or press [T] for the autopilot, and land on runway 15.',
+        done: c => onRunwayOf('EMK')(c)
+      },
+      {
+        text: 'No spoilers or autobrake: close the throttle, press [R] for reverse, and hold [Space] to stop.',
+        done: stopped
+      }
+    ],
+    failures: [tooHard(600 * FPM), offRunway]
+  },
+  {
+    id: 'fuel-leak',
+    title: 'Fuel Leak',
+    category: 'Challenge',
+    aircraft: 'b787',
+    summary: 'Fuel pours out of a 787. Find the leak, shut the engine down, and divert.',
+    briefing:
+      'Your 787 is over the sea at 10,000 ft, 27 km south-east of Eastmark. Soon the fuel gauge starts falling far faster than the engines burn. The leak is in the fuel line to engine 2: keep it running and the tanks run dry in about 7 minutes. Shut it down and the leak slows to a trickle. Dumping fuel only makes it worse. Divert to the nearest long runway and land on one engine.',
+    start: { kind: 'air', ...LEAK_START, altitude: 3050, heading: 240, speed: 280 },
+    script: c => {
+      if (c.time < LEAK_AT) return
+      c.sim.fuelLeak = c.controls.engineSwitches[1] ? LEAK_FAST : LEAK_SLOW
+    },
+    timeLimit: 900,
+    objectives: [
+      {
+        text: 'Watch the fuel gauge. When FUEL LEAK lights, press [2] to shut engine 2 down.',
+        done: c => c.time > LEAK_AT && !c.controls.engineSwitches[1]
+      },
+      {
+        text: 'Press [N] for the nearest runway. Eastmark is north-west of you.',
+        done: c => c.nav.approach !== null
+      },
+      {
+        text: 'Descend and fly the approach on one engine, or press [T] for the autopilot. Hold [A] rudder to keep straight.',
+        done: below(1000)
+      },
+      {
+        text: 'Lower the gear and flaps, and land on the runway.',
+        done: c => c.touchdown?.paved === true
+      },
+      { text: 'Hold [Space] to stop on the runway.', done: stopped }
+    ],
+    failures: [tooHard(700 * FPM), offRunway]
   },
   {
     id: 'shuttle-landing',
@@ -1262,6 +1435,184 @@ export const MISSIONS: Mission[] = [
     ]
   },
   {
+    id: 'escort',
+    title: 'Escort',
+    category: 'Air Combat',
+    aircraft: 'f16',
+    summary: 'Guard a B-2 on its bombing run from fighters that hunt it.',
+    briefing:
+      'A B-2 is flying east at 25,000 ft to bomb Gull Point Range, and you fly its escort. A green box marks it. Enemy fighters are coming for it, two ahead and two more later. Shoot them down before they get within 4 km of it. The B-2 drops flares and survives one hit, but not a second. Twelve missiles, twenty flares, 7 minutes.',
+    start: {
+      kind: 'air',
+      ...besideEscort(-1500, 700),
+      altitude: ESCORT_HEIGHT,
+      heading: ESCORT_HEADING,
+      speed: 470
+    },
+    escort: {
+      ...ESCORT_START,
+      altitude: ESCORT_HEIGHT,
+      heading: ESCORT_HEADING,
+      goal: { x: RANGE.x, z: RANGE.z }
+    },
+    missiles: 12,
+    flares: 20,
+    enemies: [
+      {
+        kind: 'fighter',
+        ...besideEscort(20_000, 600),
+        altitude: ESCORT_HEIGHT - 200,
+        heading: ESCORT_HEADING + 180,
+        prey: 'escort'
+      },
+      {
+        kind: 'fighter',
+        ...besideEscort(21_000, -900),
+        altitude: ESCORT_HEIGHT + 300,
+        heading: ESCORT_HEADING + 180
+      }
+    ],
+    // The second pair swoops in from the left of the B-2's track, wherever it is by then
+    waves: [
+      [
+        {
+          kind: 'fighter',
+          x: -12_000,
+          z: 6000,
+          altitude: ESCORT_HEIGHT + 300,
+          heading: 90,
+          prey: 'escort',
+          nearEscort: true
+        },
+        {
+          kind: 'fighter',
+          x: -13_000,
+          z: 4000,
+          altitude: ESCORT_HEIGHT - 300,
+          heading: 90,
+          prey: 'escort',
+          nearEscort: true
+        }
+      ]
+    ],
+    timeLimit: 420,
+    objectives: [
+      {
+        text: 'Fly ahead of the green box. Shoot down the two fighters coming at the B-2.',
+        done: c => combatOf(c).downed >= 2
+      },
+      {
+        text: 'Two more are diving at the B-2 from the left. Shoot them down too.',
+        done: c => combatOf(c).downed >= 4
+      },
+      {
+        text: 'Stay with the B-2 until its bombs strike Gull Point Range.',
+        done: c => c.combat?.escort?.struck === true
+      }
+    ],
+    failures: [
+      {
+        reason: 'The B-2 went down. Fly ahead of it and fire as soon as an attacker is in range.',
+        failed: c => c.combat?.escort?.alive === false
+      },
+      outOfAirMissiles(4)
+    ]
+  },
+  {
+    id: 'night-storm-dogfight',
+    title: 'Night Storm Dogfight',
+    category: 'Air Combat',
+    aircraft: 'f16',
+    summary: 'Two fighters at night, around a thunderstorm full of lightning.',
+    briefing:
+      'Two enemy fighters are coming at you at night, with a thunderstorm between you. You will hardly see them: follow the white boxes, and watch for their shapes in the lightning. The air is rough near the storm, and inside the core it can throw you around. Eight missiles, twenty-four flares, 8 minutes.',
+    start: {
+      kind: 'air',
+      x: NIGHT_STORM.x - 10_000,
+      z: NIGHT_STORM.z - 1000,
+      altitude: 4600,
+      heading: 90,
+      speed: 420
+    },
+    weather: 'storm',
+    time: 'night',
+    missiles: 8,
+    flares: 24,
+    enemies: [
+      {
+        kind: 'fighter',
+        x: NIGHT_STORM.x + 8000,
+        z: NIGHT_STORM.z - 1500,
+        altitude: 4800,
+        heading: 270
+      },
+      {
+        kind: 'fighter',
+        x: NIGHT_STORM.x + 8500,
+        z: NIGHT_STORM.z + 1500,
+        altitude: 4400,
+        heading: 270
+      }
+    ],
+    timeLimit: 480,
+    objectives: [
+      {
+        text: 'Fly east past the storm. Turn until a white box turns red, then press [Enter].',
+        done: c => combatOf(c).downed >= 1
+      },
+      {
+        text: 'Shoot down the other. When MISSILE flashes, press [Space] and turn hard.',
+        done: c => combatOf(c).downed >= 2
+      }
+    ],
+    failures: [outOfAirMissiles(2)]
+  },
+  {
+    id: 'ace-in-a-day',
+    title: 'Ace in a Day',
+    category: 'Air Combat',
+    aircraft: 'f16',
+    summary: 'Three waves of fighters, landing between each to refuel and rearm.',
+    briefing: `Enemy fighters are attacking Eastmark in waves of two, three, and four. Take off and meet each wave over the sea. Between waves, land at Eastmark and stop on the runway: the ground crew refuels and reloads you in 15 seconds. Run out of missiles mid-fight and you can land to reload then too. Nine kills make you an ace.`,
+    start: { kind: 'runway', airport: ACE_BASE },
+    base: ACE_BASE,
+    missiles: 8,
+    flares: 20,
+    waves: ACE_WAVES,
+    timeLimit: 1500,
+    objectives: [
+      {
+        text: 'Take off from Eastmark. The first wave comes in once you climb away.',
+        done: c => (c.combat?.wave ?? 0) >= 1
+      },
+      {
+        text: 'Shoot down the first wave: two fighters.',
+        done: c => combatOf(c).downed >= 2
+      },
+      {
+        text: 'Land at Eastmark and stop on the runway to refuel and rearm.',
+        done: c => (c.combat?.rearmedAfter ?? 0) >= 1
+      },
+      {
+        text: 'Take off and shoot down the second wave: three fighters.',
+        done: c => combatOf(c).downed >= 5
+      },
+      {
+        text: 'Land and stop on the runway to rearm again.',
+        done: c => (c.combat?.rearmedAfter ?? 0) >= 2
+      },
+      {
+        text: 'Take off and shoot down the last wave: four fighters.',
+        done: c => combatOf(c).downed >= 9
+      },
+      {
+        text: 'Land at Eastmark and stop on the runway.',
+        done: c => onRunwayOf(ACE_BASE)(c) && stopped(c)
+      }
+    ],
+    failures: [tooHard(900 * FPM)]
+  },
+  {
     id: 'missile-run',
     title: 'Missile Run',
     category: 'Strike',
@@ -1318,8 +1669,66 @@ export const MISSIONS: Mission[] = [
       { text: 'Bring the tower down.', done: c => missilesOf(c).hits >= 1 }
     ],
     failures: [outOfMissiles(1)]
+  },
+  {
+    id: 'under-the-radar',
+    title: 'Under the Radar',
+    category: 'Strike',
+    aircraft: 'f35',
+    summary: 'Skim the sea below 500 ft, then knock out a radar and a bunker.',
+    briefing: `A radar on Gull Point Range watches the sky for ${RADAR_REACH / 1000} km around it. Fly in from the west below 500 ft, low over the sea, and it cannot see you. Climb above 500 ft inside its reach and it spots you within ${RADAR_GRACE} seconds. Destroy the radar first; then you may climb to finish the command bunker. Three missiles, 6 minutes.`,
+    start: {
+      kind: 'air',
+      x: RANGE.x - 30_000,
+      z: RANGE.z - 6000,
+      altitude: 60,
+      heading: Math.round(Math.atan2(30_000, 6000) / DEGREES),
+      speed: 480
+    },
+    missiles: 3,
+    // The radar stands on the near side, so the card steers to it first
+    targets: [rangeTarget(-220, -140, 20, 'radar'), rangeTarget(300, 220, 14, 'command bunker')],
+    timeLimit: 360,
+    objectives: [
+      {
+        text: 'Stay below 500 ft and fly east to Gull Point Range. The card steers you there.',
+        done: c => Math.hypot(c.sim.position.x - RANGE.x, c.sim.position.z - RANGE.z) < 11_000
+      },
+      {
+        text: 'Point the nose at the radar until its box turns red, and press [Enter].',
+        done: c => c.bombs?.destroyed[0] === true
+      },
+      {
+        text: 'The radar is down. Climb if you like, and destroy the command bunker.',
+        done: c => missilesOf(c).hits >= 2
+      }
+    ],
+    failures: [
+      {
+        reason:
+          'The radar spotted you above 500 ft. Keep the radio altitude below 500 ft until the radar is down.',
+        failed: c => radarSees(c) && c.sim.altitudeAgl > RADAR_FLOOR,
+        grace: RADAR_GRACE,
+        warning: () => 'The radar is painting you: get below 500 ft now.'
+      },
+      outOfMissiles(2)
+    ]
   }
 ]
+
+/** The fight a mission brings, or null without enemy aircraft. */
+export function combatSetup(mission: Mission): CombatSetup | null {
+  const enemies = mission.enemies ?? []
+  if (enemies.length === 0 && !mission.waves?.length) return null
+  return {
+    enemies,
+    waves: mission.waves,
+    missiles: mission.missiles ?? 0,
+    flares: mission.flares ?? 0,
+    escort: mission.escort,
+    base: mission.base ? airport(mission.base).runways : undefined
+  }
+}
 
 /** Metres from where the mission started, for steps such as pushing back. */
 let origin = { x: 0, z: 0 }

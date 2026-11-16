@@ -11,7 +11,8 @@ const CRASH_REASONS: Record<CrashReason, string> = {
   terrain: 'The aircraft hit the ground.',
   water: 'The aircraft went into the sea.',
   'hard-landing': 'You touched down too hard. Keep the descent under 700 feet per minute.',
-  'gear-up': 'You touched down with the gear up. Press G to lower it before landing.',
+  'gear-up':
+    'You touched down too hard with the gear up. Press G to lower it before landing. With the gear stuck, sink under 600 feet per minute with the wings level.',
   'gear-collapse': 'The landing gear collapsed on rough ground.',
   overspeed:
     'The aircraft stayed far past its never-exceed speed and broke up. Throttle back when OVERSPEED shows. Low down the air is thick: climb before going fast.',

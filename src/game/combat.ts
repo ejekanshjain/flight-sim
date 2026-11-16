@@ -1,11 +1,17 @@
 import { Vector3 } from 'three'
 import { GRAVITY } from '../sim/aircraft'
 import type { FlightSim, Ground } from '../sim/flight-sim'
+import { outside, type Strip } from '../world/island'
 import type { Effects } from './effects'
 
 export type EnemyKind = 'fighter' | 'bomber'
 
-/** Where an enemy appears. Heading is in degrees; a bomber heads for `goal`. */
+/**
+ * Where an enemy appears. Heading is in degrees; a bomber heads for `goal`. A fighter with
+ * `prey: 'escort'` hunts the friendly bomber instead of the player. With `nearEscort`, `x` is
+ * metres right of the escort, `z` metres ahead of it, and the heading is relative to its own.
+ * `shots` overrides the missiles it carries.
+ */
 export type EnemySpawn = {
   kind: EnemyKind
   x: number
@@ -13,6 +19,48 @@ export type EnemySpawn = {
   altitude: number
   heading: number
   goal?: { x: number; z: number }
+  prey?: 'escort'
+  nearEscort?: boolean
+  shots?: number
+}
+
+/** A friendly bomber to protect, flying level from its start to `goal` to drop its load. */
+export type EscortSpawn = {
+  x: number
+  z: number
+  altitude: number
+  heading: number
+  goal: { x: number; z: number }
+}
+
+/** The friendly bomber. One hit sets it smoking; the second brings it down. */
+export type Escort = {
+  position: Vector3
+  velocity: Vector3
+  bank: number
+  hits: number
+  alive: boolean
+  falling: boolean
+  /** True once its bombs are away, then once they have struck the goal. */
+  bombed: boolean
+  struck: boolean
+  /** Seconds until the falling bombs strike. */
+  bombsFall: number
+  goal: Vector3
+  /** Seconds until it may drop flares again. */
+  flareWait: number
+}
+
+/** Everything a mission brings to the fight. */
+export type CombatSetup = {
+  enemies: EnemySpawn[]
+  /** Later waves. Each comes once the one before is down and the player is in the air. */
+  waves?: EnemySpawn[][]
+  missiles: number
+  flares: number
+  escort?: EscortSpawn
+  /** Runways where the ground crew refuels and reloads; the next wave waits for it. */
+  base?: Strip[]
 }
 
 /** An enemy aircraft, flown by simple rules rather than the full flight model. */
@@ -34,14 +82,15 @@ export type Enemy = {
   extending: number
   breakSide: number
   goal: Vector3 | null
+  prey: 'player' | 'escort'
 }
 
 /** A heat-seeking missile in flight, from the player or an enemy. */
 export type Missile = {
   position: Vector3
   velocity: Vector3
-  /** The enemy it homes on, the player, a flare that fooled it, or nothing. */
-  target: Enemy | 'player' | Flare | null
+  /** The enemy it homes on, the player, the escort, a flare that fooled it, or nothing. */
+  target: Enemy | 'player' | 'escort' | Flare | null
   age: number
   fromPlayer: boolean
 }
@@ -54,6 +103,10 @@ export type CombatEvent =
   | { kind: 'kill'; at: Vector3 }
   | { kind: 'wreck'; at: Vector3 }
   | { kind: 'hit' }
+  | { kind: 'escort-hit'; at: Vector3 }
+  | { kind: 'escort-down'; at: Vector3 }
+  | { kind: 'escort-bombs'; at: Vector3 }
+  | { kind: 'rearmed' }
 
 const SPEED: Record<EnemyKind, number> = { fighter: 240, bomber: 210 }
 // Sustained g a fighter pulls in a turn, and a bomber's gentle limit
@@ -88,6 +141,18 @@ const PLAYER_DECOY = 0.75
 const ENEMY_DECOY = 0.5
 // Enemies keep at least this far above the ground
 const FLOOR = 250
+// The escort's speed in m/s, how far short of its goal it releases (bombs carry forward as
+// they fall), the seconds they take to fall, and its flares' odds and pause
+const ESCORT_SPEED = 220
+const ESCORT_RELEASE = 7500
+const ESCORT_FALL = 34
+const ESCORT_DECOY = 0.5
+const ESCORT_FLARE_WAIT = 4
+// A new wave comes once the player climbs this high, in metres above the ground
+const WAVE_HEIGHT = 150
+// Seconds the ground crew takes to refuel and reload, and the fuel share they fill to
+const REARM_SECONDS = 15
+const REARM_FUEL = 0.5
 const STEP = 1 / 60
 const RAIL = new Vector3(0, -1, 0)
 
@@ -123,19 +188,95 @@ export class AirCombat {
   /** True while an enemy missile homes on the player. */
   warning = false
 
-  load(spawns: EnemySpawn[], missiles: number, flares: number) {
+  /** The friendly bomber on escort missions, or null. */
+  escort: Escort | null = null
+  /** Waves sent so far, out of `waves`, and the wave count when the player last rearmed. */
+  wave = 0
+  rearmedAfter = 0
+  /** Share of the ground crew's work done while stopped at the base, 0 to 1. */
+  rearm = 0
+  private waves: EnemySpawn[][] = []
+  private base: Strip[] = []
+  private loadout = { missiles: 0, flares: 0 }
+
+  load(setup: CombatSetup) {
     this.enemies.length = 0
     this.missiles.length = 0
     this.flares.length = 0
-    this.ammo = missiles
-    this.flaresLeft = flares
+    this.ammo = setup.missiles
+    this.flaresLeft = setup.flares
+    this.loadout = { missiles: setup.missiles, flares: setup.flares }
     this.lock = -1
     this.warning = false
+    this.waves = setup.waves ?? []
+    this.wave = 0
+    this.rearmedAfter = 0
+    this.rearm = 0
+    this.base = setup.base ?? []
+    const escort = setup.escort
+    this.escort = escort
+      ? {
+          position: new Vector3(escort.x, escort.altitude, escort.z),
+          velocity: new Vector3(),
+          bank: 0,
+          hits: 0,
+          alive: true,
+          falling: false,
+          bombed: false,
+          struck: false,
+          bombsFall: 0,
+          goal: new Vector3(escort.goal.x, escort.altitude, escort.goal.z),
+          flareWait: 0
+        }
+      : null
+    if (this.escort) {
+      const toward = toTarget.copy(this.escort.goal).sub(this.escort.position).normalize()
+      this.escort.velocity.copy(toward).multiplyScalar(ESCORT_SPEED)
+    }
+    this.launch(setup.enemies)
+  }
+
+  clear() {
+    this.load({ enemies: [], missiles: 0, flares: 0 })
+  }
+
+  /** True on a mission with enemies, now or still to come. */
+  get active() {
+    return this.enemies.length > 0 || this.waves.length > 0
+  }
+
+  /** Enemies still flying. */
+  get alive() {
+    return this.enemies.filter(enemy => enemy.alive).length
+  }
+
+  /** Enemies in every wave, sent or not. */
+  get total() {
+    return this.enemies.length + this.waves.slice(this.wave).reduce((sum, w) => sum + w.length, 0)
+  }
+
+  /** True when a wave is down and the next waits for the player to land at the base. */
+  get awaitingRearm() {
+    const between = this.wave < this.waves.length && this.rearmedAfter < this.wave
+    return this.base.length > 0 && between && this.alive === 0
+  }
+
+  /** Sends enemies into the fight, placing those that start near the escort around it. */
+  private launch(spawns: EnemySpawn[]) {
     for (const spawn of spawns) {
-      const heading = (spawn.heading * Math.PI) / 180
+      const near = spawn.nearEscort && this.escort
+      let { x, z } = spawn
+      let heading = (spawn.heading * Math.PI) / 180
+      if (near && this.escort) {
+        const { position, velocity } = this.escort
+        const course = Math.atan2(velocity.x, -velocity.z)
+        x = position.x + spawn.x * Math.cos(course) + spawn.z * Math.sin(course)
+        z = position.z + spawn.x * Math.sin(course) - spawn.z * Math.cos(course)
+        heading += course
+      }
       this.enemies.push({
         kind: spawn.kind,
-        position: new Vector3(spawn.x, spawn.altitude, spawn.z),
+        position: new Vector3(x, spawn.altitude, z),
         velocity: new Vector3(Math.sin(heading), 0, -Math.cos(heading)).multiplyScalar(
           SPEED[spawn.kind]
         ),
@@ -143,21 +284,15 @@ export class AirCombat {
         alive: true,
         falling: false,
         cooldown: FIRST_SHOT,
-        shots: SHOTS[spawn.kind],
+        // A fighter hunting the escort carries one missile for it
+        shots: spawn.shots ?? (spawn.prey === 'escort' ? 1 : SHOTS[spawn.kind]),
         evading: 0,
         extending: 0,
         breakSide: 1,
-        goal: spawn.goal ? new Vector3(spawn.goal.x, spawn.altitude, spawn.goal.z) : null
+        goal: spawn.goal ? new Vector3(spawn.goal.x, spawn.altitude, spawn.goal.z) : null,
+        prey: spawn.prey ?? 'player'
       })
     }
-  }
-
-  clear() {
-    this.load([], 0, 0)
-  }
-
-  get active() {
-    return this.enemies.length > 0
   }
 
   /** Enemies shot down so far. */
@@ -200,6 +335,7 @@ export class AirCombat {
     const events: CombatEvent[] = []
     for (let t = 0; t < dt; t += STEP) {
       const step = Math.min(STEP, dt - t)
+      if (this.escort) this.flyEscort(this.escort, step, ground, events)
       for (const enemy of this.enemies) this.fly(enemy, step, sim, ground, events)
       for (let i = this.missiles.length - 1; i >= 0; i--) {
         if (this.flyMissile(this.missiles[i], step, sim, ground, events)) this.missiles.splice(i, 1)
@@ -216,9 +352,94 @@ export class AirCombat {
     for (const missile of this.missiles) effects.missileTrail(missile.position, dt)
     for (const flare of this.flares) effects.flare(flare.position)
     for (const enemy of this.enemies) if (enemy.falling) effects.engineFire(enemy.position, dt)
+    const { escort } = this
+    if (escort && (escort.falling || (escort.alive && escort.hits > 0))) {
+      effects.engineFire(escort.position, dt)
+    }
     this.warning = this.missiles.some(missile => missile.target === 'player')
     this.updateLock(sim)
+    this.resupply(dt, sim, events)
+    // The next wave comes once this one is down and the player is back in the air
+    const next = this.waves[this.wave]
+    const ready = this.base.length === 0 || this.rearmedAfter >= this.wave
+    if (next && this.alive === 0 && ready && !sim.onGround && sim.altitudeAgl > WAVE_HEIGHT) {
+      this.wave++
+      this.launch(next)
+    }
     return events
+  }
+
+  /**
+   * The ground crew at work while the player sits stopped on a base runway: after
+   * REARM_SECONDS the missiles, flares, and fuel are full again.
+   */
+  private resupply(dt: number, sim: FlightSim, events: CombatEvent[]) {
+    const { x, z } = sim.position
+    const parked =
+      sim.onGround && sim.groundSpeed < 1.5 && this.base.some(runway => outside(runway, x, z) === 0)
+    const needed =
+      this.ammo < this.loadout.missiles ||
+      this.flaresLeft < this.loadout.flares ||
+      sim.fuel < sim.spec.fuelCapacity * REARM_FUEL * 0.95 ||
+      this.awaitingRearm
+    if (!parked || !needed) {
+      this.rearm = 0
+      return
+    }
+    this.rearm = Math.min(1, this.rearm + dt / REARM_SECONDS)
+    if (this.rearm < 1) return
+    this.rearm = 0
+    this.ammo = this.loadout.missiles
+    this.flaresLeft = this.loadout.flares
+    sim.fuel = Math.max(sim.fuel, sim.spec.fuelCapacity * REARM_FUEL)
+    // Rearming between waves readies the next one; mid-wave it only reloads
+    if (this.alive === 0) this.rearmedAfter = this.wave
+    events.push({ kind: 'rearmed' })
+  }
+
+  /**
+   * The escort's step: level and straight for its goal, where it drops its load and flies
+   * on. It drops flares when a missile closes on it.
+   */
+  private flyEscort(escort: Escort, dt: number, ground: Ground, events: CombatEvent[]) {
+    const { position, velocity } = escort
+    if (escort.falling) {
+      velocity.multiplyScalar(Math.exp(-dt * 0.2))
+      velocity.y -= GRAVITY * dt
+      position.addScaledVector(velocity, dt)
+      escort.bank += dt * 0.6
+      if (position.y <= Math.max(ground.heightAt(position.x, position.z), 0)) {
+        escort.falling = false
+        events.push({ kind: 'wreck', at: position.clone() })
+      }
+      return
+    }
+    // Bombs already away strike even if the bomber goes down
+    if (escort.bombed && !escort.struck) {
+      escort.bombsFall -= dt
+      if (escort.bombsFall <= 0) {
+        escort.struck = true
+        const at = escort.goal.clone()
+        at.y = Math.max(ground.heightAt(at.x, at.z), 0)
+        events.push({ kind: 'escort-bombs', at })
+      }
+    }
+    if (!escort.alive) return
+    position.addScaledVector(velocity, dt)
+    const across = Math.hypot(position.x - escort.goal.x, position.z - escort.goal.z)
+    if (!escort.bombed && across < ESCORT_RELEASE) {
+      escort.bombed = true
+      escort.bombsFall = ESCORT_FALL
+    }
+    escort.flareWait = Math.max(0, escort.flareWait - dt)
+    if (escort.flareWait > 0) return
+    const threats = this.missiles.filter(
+      missile => missile.target === 'escort' && missile.position.distanceTo(position) < BREAK_RANGE
+    )
+    if (threats.length === 0) return
+    escort.flareWait = ESCORT_FLARE_WAIT
+    const flare = this.release(position, velocity)
+    for (const missile of threats) if (Math.random() < ESCORT_DECOY) missile.target = flare
   }
 
   /** One enemy's step: chase or head for its goal, break from missiles, and fire. */
@@ -239,14 +460,20 @@ export class AirCombat {
     enemy.cooldown -= dt
     enemy.evading = Math.max(0, enemy.evading - dt)
     enemy.extending = Math.max(0, enemy.extending - dt)
-    toTarget.copy(sim.position).sub(position)
+    // Its prey: the escort while it flies, otherwise the player
+    const escort = enemy.prey === 'escort' && this.escort?.alive ? this.escort : null
+    const preyPosition = escort ? escort.position : sim.position
+    const preyVelocity = escort ? escort.velocity : sim.velocity
+    toTarget.copy(preyPosition).sub(position)
     const distance = toTarget.length()
-    // After a close pass it flies straight on for a while, then turns back for another run
+    // After a close pass it flies straight on for a while, then turns back for another run.
+    // A player on the ground sits under the base's guns, so it keeps away.
     if (distance < MERGE && enemy.extending === 0 && !enemy.goal) enemy.extending = EXTEND_SECONDS
+    const grounded = !escort && sim.onGround
     if (enemy.goal) {
       // A bomber flies level and straight for its goal
       wanted.copy(enemy.goal).sub(position).setY(0).normalize()
-    } else if (enemy.extending > EXTEND_SECONDS - EXTEND_STRAIGHT) {
+    } else if (grounded || enemy.extending > EXTEND_SECONDS - EXTEND_STRAIGHT) {
       wanted.copy(velocity).setY(0).normalize()
     } else if (enemy.evading > 0) {
       // Break turn: hard across the missile's path and a little down
@@ -257,7 +484,7 @@ export class AirCombat {
       // Lead pursuit: aim where the player will be by the time it gets there
       const seconds = Math.min(3, distance / SPEED[enemy.kind])
       wanted
-        .copy(lead.copy(sim.position).addScaledVector(sim.velocity, seconds))
+        .copy(lead.copy(preyPosition).addScaledVector(preyVelocity, seconds))
         .sub(position)
         .normalize()
     }
@@ -269,15 +496,16 @@ export class AirCombat {
     const bank = Math.atan2(rate * velocity.length(), GRAVITY) * (sideways > 0 ? -1 : 1)
     enemy.bank += (bank - enemy.bank) * Math.min(1, dt * 3)
     position.addScaledVector(velocity, dt)
-    // Fire when the player sits ahead and in range
+    // Fire when the prey sits ahead and in range
     const offNose = dir.copy(velocity).normalize().angleTo(toTarget)
-    if (enemy.shots > 0 && enemy.cooldown <= 0 && distance < FIRE_RANGE && offNose < FIRE_CONE) {
+    const inSight = distance < FIRE_RANGE && offNose < FIRE_CONE && !grounded
+    if (enemy.shots > 0 && enemy.cooldown <= 0 && inSight) {
       enemy.shots--
       enemy.cooldown = RELOAD
       this.missiles.push({
         position: position.clone(),
         velocity: velocity.clone(),
-        target: 'player',
+        target: escort ? 'escort' : 'player',
         age: 0,
         fromPlayer: false
       })
@@ -304,6 +532,11 @@ export class AirCombat {
     if (target === 'player') {
       aim = sim.position
       aimVelocity = sim.velocity
+    } else if (target === 'escort') {
+      if (this.escort?.alive) {
+        aim = this.escort.position
+        aimVelocity = this.escort.velocity
+      }
     } else if (target && 'alive' in target) {
       if (target.alive) {
         aim = target.position
@@ -331,11 +564,22 @@ export class AirCombat {
     return position.y <= Math.max(ground.heightAt(position.x, position.z), 0)
   }
 
-  /** A missile bursts by its target: an enemy goes down in flames, or the player is hit. */
+  /**
+   * A missile bursts by its target: an enemy goes down in flames, the player is hit, or the
+   * escort takes a hit.
+   */
   private detonate(missile: Missile, events: CombatEvent[]) {
-    const { target } = missile
+    const { target, position } = missile
+    const { escort } = this
     if (target === 'player') events.push({ kind: 'hit' })
-    else if (target && 'alive' in target) {
+    else if (target === 'escort' && escort) {
+      escort.hits++
+      if (escort.hits >= 2) {
+        escort.alive = false
+        escort.falling = true
+        events.push({ kind: 'escort-down', at: escort.position.clone() })
+      } else events.push({ kind: 'escort-hit', at: position.clone() })
+    } else if (target && target !== 'escort' && 'alive' in target) {
       target.alive = false
       target.falling = true
       events.push({ kind: 'kill', at: target.position.clone() })
@@ -390,23 +634,43 @@ export class AirCombat {
 
 /**
  * Advice for the fight: a missile warning first, then a lock, then which way to turn for the
- * nearest enemy. Keys sit in square brackets.
+ * nearest enemy, preferring those hunting the escort. With a base, `base` names it for the
+ * rearming advice. Keys sit in square brackets.
  */
-export function combatAdvice(combat: AirCombat, sim: FlightSim): string | null {
-  if (!combat.active || sim.onGround) return null
+export function combatAdvice(combat: AirCombat, sim: FlightSim, base?: string): string | null {
+  if (!combat.active) return null
+  if (sim.onGround) {
+    if (combat.rearm > 0) {
+      const seconds = Math.ceil((1 - combat.rearm) * REARM_SECONDS)
+      return `The ground crew is refuelling and reloading: ${seconds} s. Keep still.`
+    }
+    if (base && combat.alive === 0 && !combat.awaitingRearm && combat.total > combat.downed) {
+      return 'Ready. Take off: the next wave comes once you climb away.'
+    }
+    return null
+  }
   if (combat.warning) return 'Missile! Press [Space] for flares and turn hard across its path.'
+  if (combat.missiles.some(missile => missile.target === 'escort')) {
+    return 'A missile is chasing the B-2! It drops flares; shoot its attackers down.'
+  }
   const name = (enemy: Enemy) => (enemy.kind === 'bomber' ? 'bomber' : 'fighter')
   const locked = combat.enemies[combat.lock]
   if (locked) {
     const km = (locked.position.distanceTo(sim.position) / 1000).toFixed(1)
     return `Locked on the ${name(locked)}, ${km} km: press [Enter] to fire.`
   }
-  if (combat.ammo <= 0) {
-    return combat.missiles.some(missile => missile.fromPlayer) ? 'Missile away.' : null
+  if (base && combat.awaitingRearm) {
+    return `Wave down. Land at ${base} and stop on the runway to rearm and refuel.`
   }
+  if (combat.ammo <= 0) {
+    if (combat.missiles.some(missile => missile.fromPlayer)) return 'Missile away.'
+    return base ? `Out of missiles. Land at ${base} and stop on the runway to reload.` : null
+  }
+  // Those hunting the escort come first
   let nearest: Enemy | null = null
+  const hunting = combat.enemies.some(enemy => enemy.alive && enemy.prey === 'escort')
   for (const enemy of combat.enemies) {
-    if (!enemy.alive) continue
+    if (!enemy.alive || (hunting && enemy.prey !== 'escort')) continue
     if (
       !nearest ||
       enemy.position.distanceTo(sim.position) < nearest.position.distanceTo(sim.position)

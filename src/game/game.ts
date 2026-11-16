@@ -17,7 +17,13 @@ import { findCollision } from './collision'
 import { AirCombat, type CombatEvent } from './combat'
 import { Effects } from './effects'
 import { Gpws } from './gpws'
-import { type Mission, type MissionResult, MissionRunner, rememberPassed } from './missions'
+import {
+  combatSetup,
+  type Mission,
+  type MissionResult,
+  MissionRunner,
+  rememberPassed
+} from './missions'
 import { Navigator, planRoute } from './navigation'
 import { Pilot } from './pilot'
 import {
@@ -322,13 +328,14 @@ class Game {
     this.missions.start(mission, this.sim)
     this.won = null
     // Missiles go to air combat when there are enemy aircraft, otherwise to ground targets
-    const enemies = mission.enemies ?? []
-    this.combat.load(enemies, enemies.length ? (mission.missiles ?? 0) : 0, mission.flares ?? 0)
+    const fight = combatSetup(mission)
+    if (fight) this.combat.load(fight)
+    else this.combat.clear()
     this.bombs.load(
       mission.bombs ?? 0,
       mission.targets ?? [],
       mission.guided,
-      enemies.length ? 0 : (mission.missiles ?? 0)
+      fight ? 0 : (mission.missiles ?? 0)
     )
   }
 
@@ -657,7 +664,9 @@ class Game {
       combat: this.combat
     })
     if (!result) return
-    if (result.passed && (this.bombs.targets.length > 0 || this.combat.active)) {
+    // A fight won in the air circles the last blast; one that ends with a landing does not
+    const fought = this.bombs.targets.length > 0 || this.combat.active
+    if (result.passed && fought && !this.sim.onGround) {
       this.won = { result, left: BLAST_REPLAY }
       return
     }
@@ -679,8 +688,9 @@ class Game {
   }
 
   /**
-   * Air combat outcomes: an enemy blown apart in the air, its wreck striking the ground, or
-   * a missile hitting the player, which ends the flight.
+   * Air combat outcomes: an enemy or the escort blown apart in the air, a wreck striking the
+   * ground, the escort's bombs going off, a missile hitting the player, which ends the
+   * flight, or the ground crew finishing a rearm.
    */
   private onCombat(event: CombatEvent) {
     if (event.kind === 'hit') {
@@ -688,14 +698,31 @@ class Game {
       return
     }
     if (event.kind === 'launch') return
+    if (event.kind === 'rearmed') {
+      if (!this.state.muted) this.sound.chirp()
+      return
+    }
+    if (event.kind === 'escort-bombs') {
+      // A string of bombs across the target, along the escort's track
+      const track = this.combat.escort?.velocity ?? STILL
+      const along = Math.atan2(track.x, -track.z)
+      for (let i = -3; i <= 3; i++) {
+        const x = event.at.x + Math.sin(along) * i * 90
+        const z = event.at.z - Math.cos(along) * i * 90
+        const y = Math.max(ISLAND_GROUND.heightAt(x, z), 0)
+        this.blast({ at: new Vector3(x, y, z), water: y <= 0, hit: null, miss: 0, fell: 0 })
+      }
+      this.lastBlast.copy(event.at)
+      return
+    }
     const distance = event.at.distanceTo(this.sim.position)
     const water = event.kind === 'wreck' && ISLAND_GROUND.heightAt(event.at.x, event.at.z) < 0
     if (water) this.effects.splash(event.at, 2)
     else {
-      const power = event.kind === 'kill' ? 1.8 : 1.2
+      const power = event.kind === 'escort-hit' ? 1 : event.kind === 'wreck' ? 1.2 : 1.8
       this.effects.explode(event.at, STILL, power, event.kind === 'wreck')
     }
-    if (event.kind === 'kill') this.lastBlast.copy(event.at)
+    if (event.kind === 'kill' || event.kind === 'escort-down') this.lastBlast.copy(event.at)
     if (!this.state.muted)
       this.sound.crash(Math.max(0.15, Math.min(1, 1.1 - distance / 5000)), water)
   }
@@ -732,8 +759,8 @@ class Game {
   }
 
   /**
-   * Flames and smoke from each burning engine, and spray while a ditched aircraft slides to
-   * a stop on the sea.
+   * Flames and smoke from each burning engine, sparks under a belly landing, and spray while
+   * a ditched aircraft slides to a stop on the sea.
    */
   private burnEngines(dt: number) {
     const { sim } = this
@@ -747,6 +774,13 @@ class Game {
         .add(sim.position)
       this.effects.engineFire(spot, dt)
     })
+    // Sparks and dust from a belly sliding along the ground
+    if (sim.bellied && sim.groundSpeed > 1) {
+      const { x, z } = sim.position
+      spot.set(x, ISLAND_GROUND.heightAt(x, z), z)
+      this.effects.scrape(spot, sim.velocity, dt)
+      this.effects.shake = Math.max(this.effects.shake, Math.min(0.25, sim.groundSpeed / 250))
+    }
     if (!sim.ditched) {
       this.sprayClock = 0
       return

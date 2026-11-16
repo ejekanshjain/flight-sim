@@ -87,6 +87,11 @@ const DITCH_SINK = 3.5
 const DITCH_BANK = 0.2
 const DITCH_SPEED = 1.35
 const DITCH_DRAG = 0.6
+// A belly landing holds together below this sink rate in m/s and bank in radians. The
+// airframe then scrapes to a stop at this deceleration in m/s².
+const BELLY_SINK = 3
+const BELLY_BANK = 0.15
+const BELLY_FRICTION = 3.5
 const STRAIN_MARGIN = 1.08
 const BREAKUP_MARGIN = 1.25
 const OVERSPEED_STRAIN = 8
@@ -127,6 +132,12 @@ const smoothstep = (edge0: number, edge1: number, x: number) => {
 }
 const approach = (value: number, target: number, step: number) =>
   value < target ? Math.min(target, value + step) : Math.max(target, value - step)
+/** Height of the aircraft's origin above the ground as it rests on its lowest underside part. */
+const bellyHeight = (spec: AircraftSpec) =>
+  spec.hullPoints.reduce(
+    (lowest, point) => (point.underside ? Math.max(lowest, -point.position.y) : lowest),
+    0
+  ) || spec.restHeight
 
 export const airDensity = (altitude: number) => SEA_LEVEL_DENSITY * Math.exp(-altitude / 9000)
 
@@ -250,6 +261,14 @@ export class FlightSim {
   dumping = false
   /** Afloat after a gentle touch on the sea. */
   ditched = false
+  /** Sliding on its belly, or stopped on it, after a gentle wheels-up touchdown on land. */
+  bellied = false
+  /** Gear stuck in its bay: it stays up whatever the lever says. Missions set it. */
+  gearStuck = false
+  /** Without hydraulics the flaps, speed brake, spoilers, and autobrake stop working. */
+  hydraulicsFailed = false
+  /** Fuel lost overboard through a leak, in kg/s. */
+  fuelLeak = 0
 
   /**
    * Highest indicated airspeed in m/s allowed here: the never-exceed speed, or lower high up,
@@ -437,6 +456,10 @@ export class FlightSim {
     if (this.crash) return
     if (this.ditched) {
       this.float(dt)
+      return
+    }
+    if (this.bellied) {
+      this.slide(dt)
       return
     }
     const A = this.spec
@@ -704,6 +727,10 @@ export class FlightSim {
       engine.fire = false
     }
     this.ditched = false
+    this.bellied = false
+    this.gearStuck = false
+    this.hydraulicsFailed = false
+    this.fuelLeak = 0
     this.flapsJammed = false
     this.gearJammed = false
     this.flapOverspeed = false
@@ -731,25 +758,28 @@ export class FlightSim {
   private updateSystems(dt: number, controls: Controls) {
     const A = this.spec
     const notches = A.flapLabels.length - 1
-    if (notches > 0 && !this.flapsJammed) {
+    if (notches > 0 && !this.flapsJammed && !this.hydraulicsFailed) {
       this.flapPosition = approach(
         this.flapPosition,
         Math.min(controls.flapNotch, notches) / notches,
         dt / (A.flapSecondsPerNotch * notches)
       )
     }
-    // The gear stays locked down while weight is on the wheels
+    // The gear stays locked down while weight is on the wheels. Without hydraulics it still
+    // falls out under its own weight.
     const gearTarget =
       controls.gearDown || this.onGround || !A.retractableGear || this.gearJammed ? 1 : 0
-    this.gearPosition = approach(this.gearPosition, gearTarget, dt / A.gearSeconds)
+    const gear = this.gearStuck ? 0 : gearTarget
+    this.gearPosition = approach(this.gearPosition, gear, dt / A.gearSeconds)
     // Airliners raise the spoilers and brake by themselves once they are down and throttled back
     // The spoilers stay out through a small bounce, so the aircraft settles back down
     const bounced = this.altitudeAgl - A.restHeight > 10
+    const autobrake = A.autobrake && !this.hydraulicsFailed
     if (bounced || controls.throttle > 0.3 || this.groundSpeed < 2) this.rollout = false
-    else if (this.onGround && A.autobrake && controls.throttle < 0.1 && this.groundSpeed > 18) {
+    else if (this.onGround && autobrake && controls.throttle < 0.1 && this.groundSpeed > 18) {
       this.rollout = true
     }
-    const spoilers = controls.speedBrake || this.rollout ? 1 : 0
+    const spoilers = (controls.speedBrake || this.rollout) && !this.hydraulicsFailed ? 1 : 0
     this.speedBrakePosition = approach(this.speedBrakePosition, spoilers, dt)
     // Without reversers the lever does nothing
     const reverseTarget = controls.reverse && A.reverseThrust > 0 ? 1 : 0
@@ -807,7 +837,7 @@ export class FlightSim {
     this.enginePower = power / this.engines.length
     this.enginesRunning = running
     this.powered = controls.battery || running > 0
-    this.fuel = Math.max(0, this.fuel - (burn / this.engines.length) * dt)
+    this.fuel = Math.max(0, this.fuel - (burn / this.engines.length + this.fuelLeak) * dt)
     // Dumping needs power for the pumps and stops by itself at a landing fuel load
     const floor = A.fuelCapacity * DUMP_FLOOR
     this.dumping =
@@ -869,7 +899,9 @@ export class FlightSim {
       if (arm.y >= Math.max(terrain, 0)) continue
       if (terrain < 0) {
         if (!this.ditch(gearDown)) this.crash = 'water'
-      } else this.crash = point.underside && !gearDown ? 'gear-up' : 'terrain'
+      } else if (point.underside && !gearDown) {
+        if (!this.bellyLand()) this.crash = 'gear-up'
+      } else this.crash = 'terrain'
       return
     }
 
@@ -990,6 +1022,47 @@ export class FlightSim {
     return gentle
   }
 
+  /**
+   * A wheels-up touch on land: a belly landing if it is gentle, with the wings level and the
+   * nose not down. Returns false for a crash.
+   */
+  private bellyLand() {
+    const gentle =
+      -this.velocity.y < BELLY_SINK &&
+      Math.abs(this.bank) < BELLY_BANK &&
+      this.pitch > -0.02 &&
+      this.trueAirspeed < this.spec.approachSpeed * KNOT * DITCH_SPEED
+    if (gentle) {
+      this.bellied = true
+      this.onGround = true
+      this.rollout = false
+      this.velocity.y = 0
+      this.angularVelocity.set(0, 0, 0)
+    }
+    return gentle
+  }
+
+  /**
+   * Sliding on the belly: the airframe scrapes along the ground to a stop and settles level.
+   * The engines are wrecked by the touchdown. Sliding off the coast turns into a ditching.
+   */
+  private slide(dt: number) {
+    const speed = Math.hypot(this.velocity.x, this.velocity.z)
+    const share = speed > 0 ? Math.max(0, speed - BELLY_FRICTION * dt) / speed : 0
+    this.velocity.x *= share
+    this.velocity.z *= share
+    this.velocity.y = 0
+    this.position.addScaledVector(this.velocity, dt)
+    const terrain = this.ground.heightAt(this.position.x, this.position.z)
+    if (terrain < 0) {
+      this.bellied = false
+      this.ditched = true
+      return
+    }
+    this.position.y = terrain + bellyHeight(this.spec)
+    this.settleLevel(dt)
+  }
+
   /** Afloat after a ditching: the water slows the aircraft to a stop and it settles level. */
   private float(dt: number) {
     const slow = Math.exp(-dt * DITCH_DRAG)
@@ -998,7 +1071,14 @@ export class FlightSim {
     this.velocity.y = 0
     this.position.addScaledVector(this.velocity, dt)
     this.position.y = this.spec.restHeight * 0.35
-    // Ease the nose and wings level, keeping the heading
+    this.settleLevel(dt)
+  }
+
+  /**
+   * Down on the belly, on land or sea: the nose and wings ease level, keeping the heading,
+   * and the engines stop.
+   */
+  private settleLevel(dt: number) {
     level.setFromAxisAngle(UP, -this.heading)
     this.orientation.slerp(level, 1 - Math.exp(-dt * 1.5))
     this.trueAirspeed = Math.hypot(this.velocity.x, this.velocity.z)
