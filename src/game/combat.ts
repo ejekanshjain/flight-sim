@@ -47,6 +47,8 @@ export type Escort = {
   /** Seconds until the falling bombs strike. */
   bombsFall: number
   goal: Vector3
+  /** Where it started, which it turns back toward once its bombs have struck. */
+  home: Vector3
   /** Seconds until it may drop flares again. */
   flareWait: number
 }
@@ -148,6 +150,8 @@ const ESCORT_RELEASE = 7500
 const ESCORT_FALL = 34
 const ESCORT_DECOY = 0.5
 const ESCORT_FLARE_WAIT = 4
+// The escort's gentle turn for home, in g
+const ESCORT_G = 0.5
 // A new wave comes once the player climbs this high, in metres above the ground
 const WAVE_HEIGHT = 150
 // Seconds the ground crew takes to refuel and reload, and the fuel share they fill to
@@ -226,6 +230,7 @@ export class AirCombat {
           struck: false,
           bombsFall: 0,
           goal: new Vector3(escort.goal.x, escort.altitude, escort.goal.z),
+          home: new Vector3(escort.x, escort.altitude, escort.z),
           flareWait: 0
         }
       : null
@@ -425,6 +430,14 @@ export class AirCombat {
       }
     }
     if (!escort.alive) return
+    // Its job done, it turns gently for home, so it stays over the islands
+    if (escort.struck) {
+      wanted.copy(escort.home).sub(position).setY(0).normalize()
+      const sideways = wanted.x * velocity.z - wanted.z * velocity.x
+      const rate = steer(velocity, wanted, ESCORT_G * GRAVITY, dt)
+      const bank = Math.atan2(rate * velocity.length(), GRAVITY) * (sideways > 0 ? -1 : 1)
+      escort.bank += (bank - escort.bank) * Math.min(1, dt * 2)
+    }
     position.addScaledVector(velocity, dt)
     const across = Math.hypot(position.x - escort.goal.x, position.z - escort.goal.z)
     if (!escort.bombed && across < ESCORT_RELEASE) {

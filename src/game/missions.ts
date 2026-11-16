@@ -686,7 +686,7 @@ export const MISSIONS: Mission[] = [
     aircraft: 'f16',
     summary: `Race an F-16 through ${ISLAND_RING.length} gates around the main island.`,
     briefing:
-      'Fly through every gate in order around Coral Bay island, low over the coast. Full throttle lights the afterburner. You have 4 minutes.',
+      'Fly through every gate in order around Coral Bay island, low over the coast. Full throttle lights the afterburner. You have 6 minutes.',
     start: {
       kind: 'air',
       x: 500 - 3000,
@@ -696,7 +696,7 @@ export const MISSIONS: Mission[] = [
       speed: 420
     },
     gates: ISLAND_RING,
-    timeLimit: 240,
+    timeLimit: 360,
     objectives: [
       {
         text: `Fly through all ${ISLAND_RING.length} gates in order. The next one glows green.`,
@@ -711,10 +711,10 @@ export const MISSIONS: Mission[] = [
     aircraft: 'f35',
     summary: 'Cross the whole map from Northgate to Eastmark in an F-35.',
     briefing:
-      'Take off from Northgate and race 40 nautical miles to Eastmark through six gates. Use the afterburner, but watch the hills. You have 6 minutes.',
+      'Take off from Northgate and race 40 nautical miles to Eastmark through six gates. Use the afterburner, but watch the hills. You have 9 minutes.',
     start: { kind: 'runway', airport: 'NGT' },
     gates: NORTH_TO_EAST,
-    timeLimit: 360,
+    timeLimit: 540,
     objectives: [
       {
         text: 'Press [I] to start the engine, then [P] to release the brake.',
@@ -839,7 +839,7 @@ export const MISSIONS: Mission[] = [
         engine.failed = true
       }
     },
-    timeLimit: 600,
+    timeLimit: 1200,
     objectives: [
       {
         text: 'Fire in both engines! Press [1] and [2] to shut them down.',
@@ -961,7 +961,7 @@ export const MISSIONS: Mission[] = [
       if (c.time < LEAK_AT) return
       c.sim.fuelLeak = c.controls.engineSwitches[1] ? LEAK_FAST : LEAK_SLOW
     },
-    timeLimit: 900,
+    timeLimit: 1800,
     objectives: [
       {
         text: 'Watch the fuel gauge. When FUEL LEAK lights, press [2] to shut engine 2 down.',
@@ -1002,7 +1002,7 @@ export const MISSIONS: Mission[] = [
       speedBrake: true
     },
     gates: SHUTTLE_GATES,
-    timeLimit: 300,
+    timeLimit: 600,
     objectives: [
       {
         text: `Dive through the ${SHUTTLE_GATES.length} rings at about 290 knots. Press [B] to close the speed brake if you slow below 280.`,
@@ -1065,7 +1065,7 @@ export const MISSIONS: Mission[] = [
     aircraft: 'p51',
     summary: `Race a P-51 low around an island through ${MUSTANG_LAP.length} gates.`,
     briefing:
-      'Wave-top racing in a P-51 Mustang: one lap around the island north-west of Coral Bay, about 330 ft over the sea. Full power, steep turns, and watch the water. You have 5 minutes.',
+      'Wave-top racing in a P-51 Mustang: one lap around the island north-west of Coral Bay, about 330 ft over the sea. Full power, steep turns, and watch the water. You have 8 minutes.',
     start: {
       kind: 'air',
       x: MUSTANG_LAP[0].x - 2500,
@@ -1075,7 +1075,7 @@ export const MISSIONS: Mission[] = [
       speed: 300
     },
     gates: MUSTANG_LAP,
-    timeLimit: 300,
+    timeLimit: 480,
     objectives: [
       {
         text: `Fly through all ${MUSTANG_LAP.length} gates in order. The next one glows green.`,
@@ -1180,9 +1180,9 @@ export const MISSIONS: Mission[] = [
     aircraft: 'concorde',
     summary: 'Take Concorde through the sound barrier to Mach 1.7.',
     briefing:
-      'Concorde waits on the runway at Coral Bay with power on. Take off with the afterburners and climb high before going fast: low down, the air is too thick and the airframe overspeeds. You have 15 minutes.',
+      'Concorde waits on the runway at Coral Bay with power on. Take off with the afterburners and climb high before going fast: low down, the air is too thick and the airframe overspeeds. You have 30 minutes.',
     start: { kind: 'runway', airport: 'CBI' },
-    timeLimit: 900,
+    timeLimit: 1800,
     objectives: [
       ...startup(4).slice(2),
       {
@@ -1224,7 +1224,7 @@ export const MISSIONS: Mission[] = [
     },
     bombs: 4,
     targets: [rangeTarget(0, 0, 45, 'bunker')],
-    timeLimit: 600,
+    timeLimit: 1200,
     objectives: [
       {
         text: 'Press [Tab] to open the bombsight. The cross on the ground shows where a bomb would land.',
@@ -1245,7 +1245,7 @@ export const MISSIONS: Mission[] = [
     aircraft: 'b2',
     summary: 'Low over the sea at night, through the gates, then two targets.',
     briefing:
-      'Come in low over the sea in the dark, under the radar, through every gate to Gull Point Range. The last gates line up with the fuel depot and the radar, so one steady pass can destroy both. Climb after the drop: hills rise past the range. Six bombs, 8 minutes.',
+      'Come in low over the sea in the dark, under the radar, through every gate to Gull Point Range. The last gates line up with the fuel depot and the radar, so one steady pass can destroy both. Climb after the drop: hills rise past the range. Six bombs, 16 minutes.',
     start: {
       kind: 'air',
       x: RANGE.x - 21_000,
@@ -1259,7 +1259,7 @@ export const MISSIONS: Mission[] = [
     bombs: 6,
     // Both on the line of the last gates, so one straight pass can destroy them
     targets: [rangeTarget(-180, 0, 45, 'fuel depot'), rangeTarget(220, 30, 45, 'radar')],
-    timeLimit: 480,
+    timeLimit: 960,
     objectives: [
       {
         text: `Fly through all ${RANGE_RUN.length} gates. The next one glows green.`,
@@ -1280,7 +1280,7 @@ export const MISSIONS: Mission[] = [
     aircraft: 'b2',
     summary: 'A guided bomb from 25,000 ft onto a bunker the size of a house.',
     briefing:
-      'The way the B-2 really fights: high, far, and precise. From 25,000 ft, bring the aiming cross into the launch zone around the command bunker and release. The GPS-guided bomb steers itself the rest of the way down. Two bombs, 9 minutes.',
+      'The way the B-2 really fights: high, far, and precise. From 25,000 ft, bring the aiming cross into the launch zone around the command bunker and release. The GPS-guided bomb steers itself the rest of the way down. Two bombs, 18 minutes.',
     start: {
       kind: 'air',
       x: RANGE.x - 38_000,
@@ -1292,7 +1292,7 @@ export const MISSIONS: Mission[] = [
     bombs: 2,
     guided: true,
     targets: [rangeTarget(-90, 120, 12, 'command bunker')],
-    timeLimit: 540,
+    timeLimit: 1080,
     objectives: [
       {
         text: 'Press [Tab] for the bombsight, then head for Gull Point Range. The card steers you there.',
@@ -1312,7 +1312,7 @@ export const MISSIONS: Mission[] = [
     category: 'Bombing',
     aircraft: 'b2',
     summary: `Bring down ${DEMOLITION_GOAL} of the empty city of Verity's buildings.`,
-    briefing: `Verity's old city stands empty, waiting to be cleared for a new one. The demolition crews asked for the fast way. Open the bombsight with Tab, then hold Enter as you cross the city to drop a string of bombs. Bring down ${DEMOLITION_GOAL} buildings with 80 bombs in 20 minutes. Hills rise to 2,600 ft west of the city, so stay at 3,600 ft and turn back over them or the sea.`,
+    briefing: `Verity's old city stands empty, waiting to be cleared for a new one. The demolition crews asked for the fast way. Open the bombsight with Tab, then hold Enter as you cross the city to drop a string of bombs. Bring down ${DEMOLITION_GOAL} buildings with 80 bombs in 40 minutes. Hills rise to 2,600 ft west of the city, so stay at 3,600 ft and turn back over them or the sea.`,
     start: {
       kind: 'air',
       ...DEMOLITION_START,
@@ -1322,7 +1322,7 @@ export const MISSIONS: Mission[] = [
     },
     bombs: 80,
     demolish: { city: VERITY.name, goal: DEMOLITION_GOAL },
-    timeLimit: 1200,
+    timeLimit: 2400,
     objectives: [
       { text: 'Press [Tab] to open the bombsight.', done: c => c.bombsight === true },
       {
@@ -1353,7 +1353,7 @@ export const MISSIONS: Mission[] = [
     aircraft: 'f16',
     summary: 'An F-16 against two enemy fighters that shoot back.',
     briefing:
-      'Two enemy fighters are coming at you over the sea, 12 km ahead at 10,000 ft. A white box marks each one. Turn until its box turns red, then press Enter for a heat-seeking missile. They fire back: when MISSILE flashes, press Space for flares and turn hard across its path. Six missiles, twenty flares, 7 minutes.',
+      'Two enemy fighters are coming at you over the sea, 12 km ahead at 10,000 ft. A white box marks each one. Turn until its box turns red, then press Enter for a heat-seeking missile. They fire back: when MISSILE flashes, press Space for flares and turn hard across its path. Six missiles, twenty flares, 15 minutes.',
     start: {
       kind: 'air',
       x: DOGFIGHT.x,
@@ -1368,7 +1368,7 @@ export const MISSIONS: Mission[] = [
       { kind: 'fighter', x: DOGFIGHT.x - 1500, z: DOGFIGHT.z - 6000, altitude: 3200, heading: 180 },
       { kind: 'fighter', x: DOGFIGHT.x + 1500, z: DOGFIGHT.z - 6500, altitude: 2800, heading: 180 }
     ],
-    timeLimit: 420,
+    timeLimit: 900,
     objectives: [
       {
         text: 'Turn until a white box turns red, then press [Enter] to fire. Shoot one down.',
@@ -1405,7 +1405,7 @@ export const MISSIONS: Mission[] = [
       bomber(CORAL_BAY.x + 44_000, CORAL_BAY.z - 700),
       bomber(CORAL_BAY.x + 46_000, CORAL_BAY.z + 700)
     ],
-    timeLimit: 480,
+    timeLimit: 960,
     objectives: [
       {
         text: 'Fly east toward the bombers until their boxes appear ahead.',
@@ -1441,7 +1441,7 @@ export const MISSIONS: Mission[] = [
     aircraft: 'f16',
     summary: 'Guard a B-2 on its bombing run from fighters that hunt it.',
     briefing:
-      'A B-2 is flying east at 25,000 ft to bomb Gull Point Range, and you fly its escort. A green box marks it. Enemy fighters are coming for it, two ahead and two more later. Shoot them down before they get within 4 km of it. The B-2 drops flares and survives one hit, but not a second. Twelve missiles, twenty flares, 7 minutes.',
+      'A B-2 is flying east at 25,000 ft to bomb Gull Point Range, and you fly its escort. A green box marks it. Enemy fighters are coming for it, two ahead and two more later. Shoot them down before they get within 4 km of it. The B-2 drops flares and survives one hit, but not a second. Twelve missiles, twenty flares, 15 minutes.',
     start: {
       kind: 'air',
       ...besideEscort(-1500, 700),
@@ -1495,7 +1495,7 @@ export const MISSIONS: Mission[] = [
         }
       ]
     ],
-    timeLimit: 420,
+    timeLimit: 900,
     objectives: [
       {
         text: 'Fly ahead of the green box. Shoot down the two fighters coming at the B-2.',
@@ -1525,7 +1525,7 @@ export const MISSIONS: Mission[] = [
     aircraft: 'f16',
     summary: 'Two fighters at night, around a thunderstorm full of lightning.',
     briefing:
-      'Two enemy fighters are coming at you at night, with a thunderstorm between you. You will hardly see them: follow the white boxes, and watch for their shapes in the lightning. The air is rough near the storm, and inside the core it can throw you around. Eight missiles, twenty-four flares, 8 minutes.',
+      'Two enemy fighters are coming at you at night, with a thunderstorm between you. You will hardly see them: follow the white boxes, and watch for their shapes in the lightning. The air is rough near the storm, and inside the core it can throw you around. Eight missiles, twenty-four flares, 15 minutes.',
     start: {
       kind: 'air',
       x: NIGHT_STORM.x - 10_000,
@@ -1554,7 +1554,7 @@ export const MISSIONS: Mission[] = [
         heading: 270
       }
     ],
-    timeLimit: 480,
+    timeLimit: 900,
     objectives: [
       {
         text: 'Fly east past the storm. Turn until a white box turns red, then press [Enter].',
@@ -1579,7 +1579,7 @@ export const MISSIONS: Mission[] = [
     missiles: 8,
     flares: 20,
     waves: ACE_WAVES,
-    timeLimit: 1500,
+    timeLimit: 3000,
     objectives: [
       {
         text: 'Take off from Eastmark. The first wave comes in once you climb away.',
@@ -1619,7 +1619,7 @@ export const MISSIONS: Mission[] = [
     aircraft: 'f16',
     summary: 'An F-16 with four missiles against a radar, a fuel depot, and a target tower.',
     briefing:
-      'Your F-16 is 22 km west of Gull Point Range at 3,000 ft with four guided missiles. A white box marks each target. Point the nose at one until its box turns red, then press Enter. The missile does the rest. You have 7 minutes.',
+      'Your F-16 is 22 km west of Gull Point Range at 3,000 ft with four guided missiles. A white box marks each target. Point the nose at one until its box turns red, then press Enter. The missile does the rest. You have 15 minutes.',
     start: { kind: 'air', x: RANGE.x - 22_000, z: RANGE.z, altitude: 900, heading: 90, speed: 400 },
     missiles: 4,
     targets: [
@@ -1627,7 +1627,7 @@ export const MISSIONS: Mission[] = [
       rangeTarget(320, -260, 20, 'radar'),
       rangeTarget(-280, 240, 25, 'fuel depot')
     ],
-    timeLimit: 420,
+    timeLimit: 900,
     objectives: [
       {
         text: 'Fly toward the range. Point the nose at a white box until it turns red.',
@@ -1645,7 +1645,7 @@ export const MISSIONS: Mission[] = [
     aircraft: 'f35',
     summary: 'Dive an F-35 from 20,000 ft and bring down a 90 m tower with one shot.',
     briefing:
-      'The F-35 starts high and fast, 40 km out. Dive toward Gull Point Range, put the box on the 90 m target tower, and fire. You carry two missiles, so a miss leaves you one more try. You have 8 minutes.',
+      'The F-35 starts high and fast, 40 km out. Dive toward Gull Point Range, put the box on the 90 m target tower, and fire. You carry two missiles, so a miss leaves you one more try. You have 16 minutes.',
     start: {
       kind: 'air',
       x: RANGE.x - 40_000,
@@ -1656,7 +1656,7 @@ export const MISSIONS: Mission[] = [
     },
     missiles: 2,
     targets: [rangeTarget(0, 0, 18, 'target tower', 90)],
-    timeLimit: 480,
+    timeLimit: 960,
     objectives: [
       {
         text: 'Head for Gull Point Range and dive. The card tells you where to turn.',
@@ -1676,7 +1676,7 @@ export const MISSIONS: Mission[] = [
     category: 'Strike',
     aircraft: 'f35',
     summary: 'Skim the sea below 500 ft, then knock out a radar and a bunker.',
-    briefing: `A radar on Gull Point Range watches the sky for ${RADAR_REACH / 1000} km around it. Fly in from the west below 500 ft, low over the sea, and it cannot see you. Climb above 500 ft inside its reach and it spots you within ${RADAR_GRACE} seconds. Destroy the radar first; then you may climb to finish the command bunker. Three missiles, 6 minutes.`,
+    briefing: `A radar on Gull Point Range watches the sky for ${RADAR_REACH / 1000} km around it. Fly in from the west below 500 ft, low over the sea, and it cannot see you. Climb above 500 ft inside its reach and it spots you within ${RADAR_GRACE} seconds. Destroy the radar first; then you may climb to finish the command bunker. Three missiles, 12 minutes.`,
     start: {
       kind: 'air',
       x: RANGE.x - 30_000,
@@ -1688,7 +1688,7 @@ export const MISSIONS: Mission[] = [
     missiles: 3,
     // The radar stands on the near side, so the card steers to it first
     targets: [rangeTarget(-220, -140, 20, 'radar'), rangeTarget(300, 220, 14, 'command bunker')],
-    timeLimit: 360,
+    timeLimit: 720,
     objectives: [
       {
         text: 'Stay below 500 ft and fly east to Gull Point Range. The card steers you there.',
