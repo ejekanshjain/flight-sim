@@ -669,6 +669,16 @@ function seeded(seed: number) {
   }
 }
 
+/** The lowest any live enemy has flown above the ground or sea, in metres. */
+function lowestEnemy(combat: AirCombat, lowest: number) {
+  for (const enemy of combat.enemies) {
+    if (!enemy.alive) continue
+    const { x, y, z } = enemy.position
+    lowest = Math.min(lowest, y - Math.max(heightAt(x, z), 0))
+  }
+  return lowest
+}
+
 /**
  * A fighter pilot for the air combat tests. Each step drops flares and breaks hard when a
  * missile comes, otherwise chases the nearest enemy with no missile on its way yet, those
@@ -697,13 +707,22 @@ function fighterPilot(sim: FlightSim, pilot: Pilot, combat: AirCombat, nav: Navi
       pilot.autopilot.heading = Math.atan2(lead.x - sim.position.x, sim.position.z - lead.z)
       pilot.autopilot.hold = Math.max(1200, nearest.position.y)
     }
+    // Stay 700 m above the highest ground in the next 20 seconds of flight
+    let ground = 0
+    for (let seconds = 0; seconds <= 20; seconds += 2) {
+      const x = sim.position.x + sim.velocity.x * seconds
+      const z = sim.position.z + sim.velocity.z * seconds
+      ground = Math.max(ground, heightAt(x, z))
+    }
+    pilot.autopilot.hold = Math.max(pilot.autopilot.hold, ground + 700)
     if (combat.lock >= 0) combat.fire(sim)
     pilot.update(STEP, sim, nav)
     // Bank up to 77° toward the chosen heading and slow toward 380 kt in a hard turn.
-    // Below 1,500 ft, bank no more than 45° so the turn does not sink into the hills.
+    // Low, or under 1,000 m above the ground ahead, bank no more than 45° so it can climb.
     const track = Math.atan2(sim.velocity.x, -sim.velocity.z)
     const error = turnFrom(track, pilot.autopilot.heading)
-    const most = sim.altitudeAgl < 460 ? 0.8 : 1.35
+    const low = sim.altitudeAgl < 460 || sim.position.y < Math.max(ground, 0) + 1000
+    const most = low ? 0.8 : 1.35
     const bank = Math.max(-most, Math.min(most, error * 3))
     pilot.controls.roll = limit((bank - sim.bank) * 1.5 + sim.angularVelocity.z * 0.3)
     const slow = sim.indicatedAirspeed / KNOT > 380 ? 0 : 0.9
@@ -732,6 +751,7 @@ test('a fighter pilot who turns hard and uses flares wins every air combat missi
       runner.start(mission, sim)
       const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null, combat }
       let result = null
+      let lowest = Number.POSITIVE_INFINITY
       for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
         fly(time)
         sim.step(STEP, pilot.controls, CALM)
@@ -739,12 +759,44 @@ test('a fighter pilot who turns hard and uses flares wins every air combat missi
           if (event.kind === 'hit') sim.crash = 'missile'
         }
         result = runner.update(STEP, context)
+        lowest = lowestEnemy(combat, lowest)
       }
+      // Enemies never fly into the ground or the sea
+      expect(lowest).toBeGreaterThan(30)
       expect(sim.crash).toBeNull()
       expect(result).toMatchObject({ passed: true })
     }
   } finally {
     Math.random = random
+  }
+})
+
+test('enemies wait within reach of the base while the player is down rearming', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'ace-in-a-day')
+  const spec = HANGAR.find(candidate => candidate.id === 'f16')
+  const setup = mission && combatSetup(mission)
+  const runway = AIRPORTS.find(airport => airport.code === 'EMK')?.runways[0]
+  if (!spec || !setup || !runway) throw new Error('Missing mission')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  const course = (runway.heading * Math.PI) / 180
+  const combat = new AirCombat()
+  combat.load(setup)
+  const effects = new Effects()
+  // Climb out to call the first wave, then sit on the runway for three minutes
+  sim.placeInAir(runway.x, heightAt(runway.x, runway.z) + 2500, runway.z, course, 200)
+  combat.update(STEP, sim, ISLAND_GROUND, effects)
+  expect(combat.alive).toBe(2)
+  sim.placeOnGround(runway.x, runway.z, course)
+  const controls = { ...new Pilot().controls, throttle: 0, parkingBrake: true }
+  let fired = false
+  for (let time = 0; time < 180; time += STEP) {
+    sim.step(STEP, controls, CALM)
+    combat.update(STEP, sim, ISLAND_GROUND, effects)
+    fired ||= combat.missiles.length > 0
+  }
+  expect(fired).toBe(false)
+  for (const enemy of combat.enemies) {
+    expect(enemy.position.distanceTo(sim.position)).toBeLessThan(10_000)
   }
 })
 
@@ -792,6 +844,7 @@ test('a pilot who lands to rearm between waves shoots down all three in Ace in a
     }
     let result = null
     let landings = 0
+    let lowest = Number.POSITIVE_INFINITY
     for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
       const waveDown = combat.alive === 0 && (combat.awaitingRearm || combat.downed === enemies)
       const empty = combat.ammo === 0 && !combat.missiles.some(missile => missile.fromPlayer)
@@ -811,7 +864,9 @@ test('a pilot who lands to rearm between waves shoots down all three in Ace in a
         if (event.kind === 'hit') sim.crash = 'missile'
       }
       result = runner.update(STEP, context)
+      lowest = lowestEnemy(combat, lowest)
     }
+    expect(lowest).toBeGreaterThan(30)
     expect(sim.crash).toBeNull()
     expect(result).toMatchObject({ passed: true })
     expect(combat.downed).toBe(9)

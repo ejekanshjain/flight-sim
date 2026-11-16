@@ -141,8 +141,13 @@ const EXTEND_SECONDS = 20
 const FLARE_LIFE = 4
 const PLAYER_DECOY = 0.75
 const ENEMY_DECOY = 0.5
-// Enemies keep at least this far above the ground
+// Enemies keep at least this far above the ground, looking this many seconds ahead for
+// rising ground. They start pulling up when a dive would reach the floor within
+// PULL_UP_SECONDS, and never fly lower than MIN_CLEARANCE.
 const FLOOR = 250
+const LOOK_AHEAD = [0, 2, 4, 7]
+const PULL_UP_SECONDS = 5
+const MIN_CLEARANCE = 40
 // The escort's speed in m/s, how far short of its goal it releases (bombs carry forward as
 // they fall), the seconds they take to fall, and its flares' odds and pause
 const ESCORT_SPEED = 220
@@ -156,7 +161,12 @@ const ESCORT_G = 0.5
 const WAVE_HEIGHT = 150
 // Seconds the ground crew takes to refuel and reload, and the fuel share they fill to
 const REARM_SECONDS = 15
-const REARM_FUEL = 0.5
+const REARM_FUEL = 1
+// Below this height in metres and within this distance of a base, the player is under its
+// guns. Enemies then circle this far from the player until it climbs out.
+const SHELTER_HEIGHT = 300
+const SHELTER_REACH = 8000
+const HOLD_RADIUS = 7000
 const STEP = 1 / 60
 const RAIL = new Vector3(0, -1, 0)
 
@@ -402,6 +412,25 @@ export class AirCombat {
     events.push({ kind: 'rearmed' })
   }
 
+  /** Highest ground or sea under an enemy now and over the next few seconds of its path. */
+  private floorAhead(position: Vector3, velocity: Vector3, ground: Ground) {
+    let highest = 0
+    for (const seconds of LOOK_AHEAD) {
+      const x = position.x + velocity.x * seconds
+      const z = position.z + velocity.z * seconds
+      highest = Math.max(highest, ground.heightAt(x, z))
+    }
+    return highest
+  }
+
+  /** True while the player is on the ground, or low near a base, where enemies hold off. */
+  private sheltered(sim: FlightSim) {
+    if (sim.onGround) return true
+    if (sim.altitudeAgl > SHELTER_HEIGHT) return false
+    const { x, z } = sim.position
+    return this.base.some(runway => Math.hypot(runway.x - x, runway.z - z) < SHELTER_REACH)
+  }
+
   /**
    * The escort's step: level and straight for its goal, where it drops its load and flies
    * on. It drops flares when a missile closes on it.
@@ -479,14 +508,22 @@ export class AirCombat {
     const preyVelocity = escort ? escort.velocity : sim.velocity
     toTarget.copy(preyPosition).sub(position)
     const distance = toTarget.length()
-    // After a close pass it flies straight on for a while, then turns back for another run.
-    // A player on the ground sits under the base's guns, so it keeps away.
+    // After a close pass it flies straight on for a while, then turns back for another run
     if (distance < MERGE && enemy.extending === 0 && !enemy.goal) enemy.extending = EXTEND_SECONDS
-    const grounded = !escort && sim.onGround
+    // A player on the ground, or low over the base, sits under its guns. The enemy circles
+    // out of their reach and waits, close enough to fight again once the player climbs out.
+    const sheltered = !escort && this.sheltered(sim)
     if (enemy.goal) {
       // A bomber flies level and straight for its goal
       wanted.copy(enemy.goal).sub(position).setY(0).normalize()
-    } else if (grounded || enemy.extending > EXTEND_SECONDS - EXTEND_STRAIGHT) {
+    } else if (sheltered) {
+      const out = lead.copy(position).sub(sim.position).setY(0)
+      const reach = out.length()
+      out.divideScalar(Math.max(reach, 1))
+      // Around the circle, leaning in or out toward its radius
+      const drift = Math.max(-1, Math.min(1, (reach - HOLD_RADIUS) / 2000))
+      wanted.set(-out.z, 0, out.x).addScaledVector(out, -drift).normalize()
+    } else if (enemy.extending > EXTEND_SECONDS - EXTEND_STRAIGHT) {
       wanted.copy(velocity).setY(0).normalize()
     } else if (enemy.evading > 0) {
       // Break turn: hard across the missile's path and a little down
@@ -501,17 +538,26 @@ export class AirCombat {
         .sub(position)
         .normalize()
     }
-    const floor = Math.max(ground.heightAt(position.x, position.z), 0) + FLOOR
-    if (position.y < floor) wanted.y = Math.max(wanted.y, 0.35)
+    // Pull up for the highest ground under the next few seconds of flight, early enough that
+    // the climb starts before a dive reaches it
+    const floor = this.floorAhead(position, velocity, ground) + FLOOR
+    const soon = position.y + Math.min(0, velocity.y) * PULL_UP_SECONDS
+    if (soon < floor) wanted.y = Math.max(wanted.y, position.y < floor ? 0.5 : 0.25)
     wanted.normalize()
     const sideways = wanted.x * velocity.z - wanted.z * velocity.x
     const rate = steer(velocity, wanted, MAX_G[enemy.kind] * GRAVITY, dt)
     const bank = Math.atan2(rate * velocity.length(), GRAVITY) * (sideways > 0 ? -1 : 1)
     enemy.bank += (bank - enemy.bank) * Math.min(1, dt * 3)
     position.addScaledVector(velocity, dt)
+    // Never through the ground or the sea, whatever the turn asked for
+    const lowest = Math.max(ground.heightAt(position.x, position.z), 0) + MIN_CLEARANCE
+    if (position.y < lowest) {
+      position.y = lowest
+      if (velocity.y < 0) velocity.y = 0
+    }
     // Fire when the prey sits ahead and in range
     const offNose = dir.copy(velocity).normalize().angleTo(toTarget)
-    const inSight = distance < FIRE_RANGE && offNose < FIRE_CONE && !grounded
+    const inSight = distance < FIRE_RANGE && offNose < FIRE_CONE && !sheltered
     if (enemy.shots > 0 && enemy.cooldown <= 0 && inSight) {
       enemy.shots--
       enemy.cooldown = RELOAD
