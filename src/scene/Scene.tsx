@@ -1,5 +1,6 @@
 import { Canvas, useFrame } from '@react-three/fiber'
 import { game, useGame } from '../game/game'
+import { AirCombat } from './AirCombat'
 import { Aircraft } from './Aircraft'
 import { Airports } from './Airports'
 import { FOG_DENSITY, HORIZON_COLOR } from './atmosphere'
@@ -9,8 +10,10 @@ import { Effects } from './Effects'
 import { Glow } from './Glow'
 import { MissionGates } from './MissionGates'
 import { AircraftLights, LandingLight, TownLights } from './NightLights'
+import { PhotoCamera } from './PhotoCamera'
 import { ApproachPath, RunwayLights } from './RunwayLights'
 import { Balloons, Birds, Boats, Cities, Lighthouse, Roads, Villages } from './Scenery'
+import { Storm } from './Storm'
 import { TrafficAircraft } from './Traffic'
 import { CloudDeck, Environment, Rain } from './Weather'
 import { Clouds, Lights, Sea, Sky, Terrain, Trees } from './World'
@@ -40,6 +43,7 @@ export function Scene() {
       <Simulation />
       <Environment />
       <CameraRig />
+      <PhotoCamera />
       <Sky />
       <Lights />
       <Terrain />
@@ -52,6 +56,7 @@ export function Scene() {
       <ApproachPath />
       <MissionGates />
       <Bombing />
+      <AirCombat />
       <Trees />
       <Villages />
       <Cities />
@@ -63,6 +68,7 @@ export function Scene() {
       <Clouds />
       <CloudDeck />
       <Rain />
+      <Storm />
       <TrafficAircraft />
       <Aircraft />
       <Effects />

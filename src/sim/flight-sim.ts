@@ -69,6 +69,7 @@ export type CrashReason =
   | 'gear-up'
   | 'gear-collapse'
   | 'overspeed'
+  | 'missile'
   | 'tree'
   | 'building'
   | 'balloon'

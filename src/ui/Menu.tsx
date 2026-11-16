@@ -15,6 +15,8 @@ const CRASH_REASONS: Record<CrashReason, string> = {
   'gear-collapse': 'The landing gear collapsed on rough ground.',
   overspeed:
     'The aircraft stayed far past its never-exceed speed and broke up. Throttle back when OVERSPEED shows. Low down the air is thick: climb before going fast.',
+  missile:
+    'An enemy missile hit the aircraft. When MISSILE flashes, press Space for flares and turn hard across its path.',
   tree: 'The aircraft flew into a tree.',
   building: 'The aircraft flew into a building.',
   balloon: 'The aircraft flew into a hot-air balloon.',
@@ -70,7 +72,7 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
       [['G'], 'Raise or lower the landing gear'],
       [['B'], 'Open or close the airbrake'],
       [['R'], 'Reverse thrust, on the ground or in the air'],
-      [['Space'], 'Wheel brakes while held'],
+      [['Space'], 'Wheel brakes while held. In the air in a fight, drop flares'],
       [[',', '.'], 'Left or right brake, to turn tightly on the ground'],
       [['P'], 'Parking brake'],
       [['L'], 'Landing lights'],
@@ -84,6 +86,7 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
     rows: [
       [['C'], 'Switch between chase and cockpit view'],
       [['M'], 'Enlarge, then hide the map'],
+      [['`'], 'Photo mode: freeze the flight, hide the panels, and move a free camera'],
       [['Esc'], 'Pause']
     ]
   }
@@ -575,7 +578,8 @@ function ReferenceTabs() {
               ['clear', 'Clear'],
               ['cloudy', 'Low Cloud'],
               ['rain', 'Rain'],
-              ['fog', 'Fog']
+              ['fog', 'Fog'],
+              ['storm', 'Storm']
             ]}
             onChange={game.setWeather}
           />

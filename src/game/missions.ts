@@ -1,5 +1,5 @@
 import type { Controls, FlightSim } from '../sim/flight-sim'
-import { APPROACHES } from '../world/approaches'
+import { APPROACHES, onCentreline } from '../world/approaches'
 import {
   AIRPORTS,
   type Airport,
@@ -11,9 +11,11 @@ import {
   RANGE
 } from '../world/island'
 import type { Bombs, Target } from './bombs'
+import { AIR_LOCK_RANGE, type AirCombat, type EnemySpawn } from './combat'
 import type { TimeOfDay, Weather, WindLevel } from './game'
 import type { Navigator } from './navigation'
 import type { Pilot } from './pilot'
+import type { Microburst } from './storm'
 
 export type MissionCategory =
   | 'Tutorial'
@@ -22,13 +24,15 @@ export type MissionCategory =
   | 'Challenge'
   | 'Bombing'
   | 'Strike'
+  | 'Air Combat'
 export const MISSION_CATEGORIES: MissionCategory[] = [
   'Tutorial',
   'Speed Run',
   'Airline',
   'Challenge',
   'Bombing',
-  'Strike'
+  'Strike',
+  'Air Combat'
 ]
 
 /** A ring to fly through, in order. Heading is in radians. */
@@ -52,6 +56,8 @@ export type MissionContext = {
   bombs?: Bombs
   /** True while the player looks through the bombsight. */
   bombsight?: boolean
+  /** Enemy aircraft, missiles, and flares, on air combat missions. */
+  combat?: AirCombat
 }
 
 /**
@@ -123,8 +129,11 @@ export type Mission = {
   targets?: Target[]
   /** GPS-guided bombs, which steer themselves from the launch zone around a target. */
   guided?: boolean
-  /** Guided missiles on the rails, for fighters. */
+  /** Guided missiles on the rails, for fighters. With enemies they seek aircraft. */
   missiles?: number
+  /** Enemy aircraft in the air, and flares to decoy their missiles. */
+  enemies?: EnemySpawn[]
+  flares?: number
   /** A city to bring down, and how many of its buildings must fall. */
   demolish?: { city: string; goal: number }
   objectives: Objective[]
@@ -132,6 +141,8 @@ export type Mission = {
   failures?: Failure[]
   /** Runs every frame, for scripted events such as an engine failure. */
   script?: (context: MissionContext) => void
+  /** A microburst that blows for the whole mission, in any weather. */
+  microburst?: Microburst
 }
 
 const FEET = 0.3048
@@ -293,6 +304,39 @@ const outOfMissiles = (needed: number): Failure => ({
   }
 })
 
+/** Enemy aircraft shot down so far, and the player's missiles left and in flight. */
+const combatOf = (c: MissionContext) => ({
+  downed: c.combat?.downed ?? 0,
+  left: c.combat?.ammo ?? 0,
+  flying: c.combat?.missiles.some(missile => missile.fromPlayer) ?? false
+})
+
+/** Fails once the last missile has flown with enemies still in the air. */
+const outOfAirMissiles = (needed: number): Failure => ({
+  reason:
+    'Every missile is gone and enemies are still flying. Wait for the box to turn red before you fire.',
+  failed: c => {
+    const { downed, left, flying } = combatOf(c)
+    return downed < needed && left === 0 && !flying
+  }
+})
+
+// The dogfight is over open sea north-east of the main island, between the other islands
+const DOGFIGHT = { x: 16_000, z: 24_000 }
+// Bombers come in from the east at 25,000 ft, heading for Coral Bay
+const CORAL_BAY = CITIES.find(city => city.name === 'Coral Bay') ?? CITIES[0]
+const BOMBER_HEIGHT = 7600
+const bomber = (x: number, z: number): EnemySpawn => ({
+  kind: 'bomber',
+  x,
+  z,
+  altitude: BOMBER_HEIGHT,
+  heading: 270,
+  goal: { x: CORAL_BAY.x, z: CORAL_BAY.z }
+})
+// A bomber this close to Coral Bay has reached it
+const DEFENDED = 6000
+
 /** Targets destroyed so far, and the bombs left and still falling. */
 const bombsOf = (c: MissionContext) => ({
   hits: c.bombs?.hits ?? 0,
@@ -356,6 +400,24 @@ const SHUTTLE_GATES: Gate[] = [8000, 5000, 2500].map(distance => ({
 }))
 
 const NORTH_TO_EAST = gatesThrough(line(airport('NGT'), airport('EMK'), 6), 180, 110)
+
+// The storm approach: a microburst sits on the ILS to Coral Bay's runway 09, centred 4 km
+// before the threshold, where the glide path is about 700 ft above the ground. Its tailwind
+// side reaches the low ridge 3 km out.
+const STORM_FINAL = APPROACHES.find(approach => approach.id === 'ILS 09 CBI') ?? APPROACHES[0]
+const STORM_BURST: Microburst = {
+  ...onCentreline(STORM_FINAL.end, 4000),
+  radius: 900,
+  outflow: 13,
+  ceiling: 1500
+}
+/** True once the aircraft is through the microburst and out the far side. */
+const throughBurst = (context: MissionContext) => {
+  const course = (STORM_FINAL.end.heading * Math.PI) / 180
+  const { x, z } = context.sim.position
+  const along = (x - STORM_BURST.x) * Math.sin(course) - (z - STORM_BURST.z) * Math.cos(course)
+  return along > STORM_BURST.radius * 1.4 || context.sim.onGround
+}
 
 export const MISSIONS: Mission[] = [
   {
@@ -849,6 +911,36 @@ export const MISSIONS: Mission[] = [
     ]
   },
   {
+    id: 'storm-approach',
+    title: 'Storm Approach',
+    category: 'Challenge',
+    aircraft: 'a320',
+    summary: 'Fly an A320 through a microburst on short final and land in a thunderstorm.',
+    briefing:
+      'A thunderstorm hangs over Coral Bay. Your A320 is on the ILS to runway 09 in heavy rain, rough air, and lightning. A microburst sits on short final: first a headwind, then sinking air and a tailwind. When WINDSHEAR flashes, add full power and raise the nose. Then land and stop on the runway.',
+    start: { kind: 'approach', approach: 'ILS 09 CBI', distance: 16_000, speed: 180, flapNotch: 2 },
+    approach: 'ILS 09 CBI',
+    weather: 'storm',
+    wind: 'light',
+    microburst: STORM_BURST,
+    objectives: [
+      {
+        text: 'Lower the gear [G] and set full flaps [F]. Press [Z], [X], then [T] for the autopilot, or follow the coach by hand.',
+        done: c => c.controls.gearDown && c.controls.flapNotch >= 4
+      },
+      {
+        text: 'Stay on the glide path. When WINDSHEAR flashes, push full power with [W] and raise the nose with [↓] to stop the sink.',
+        done: throughBurst
+      },
+      {
+        text: 'You are through the shear. Ease the power back onto the glide path and land on runway 09.',
+        done: onRunwayOf('CBI')
+      },
+      { text: 'Hold [Space] to stop on the runway.', done: stopped }
+    ],
+    failures: [tooHard(700 * FPM), offRunway]
+  },
+  {
     id: 'night-fog',
     title: 'Night Fog',
     category: 'Challenge',
@@ -1079,6 +1171,94 @@ export const MISSIONS: Mission[] = [
           return left === 0 && falling === 0 && fallen < DEMOLITION_GOAL
         }
       }
+    ]
+  },
+  {
+    id: 'dogfight',
+    title: 'Dogfight',
+    category: 'Air Combat',
+    aircraft: 'f16',
+    summary: 'An F-16 against two enemy fighters that shoot back.',
+    briefing:
+      'Two enemy fighters are coming at you over the sea, 12 km ahead at 10,000 ft. A white box marks each one. Turn until its box turns red, then press Enter for a heat-seeking missile. They fire back: when MISSILE flashes, press Space for flares and turn hard across its path. Six missiles, twenty flares, 7 minutes.',
+    start: {
+      kind: 'air',
+      x: DOGFIGHT.x,
+      z: DOGFIGHT.z + 6000,
+      altitude: 3000,
+      heading: 0,
+      speed: 420
+    },
+    missiles: 6,
+    flares: 20,
+    enemies: [
+      { kind: 'fighter', x: DOGFIGHT.x - 1500, z: DOGFIGHT.z - 6000, altitude: 3200, heading: 180 },
+      { kind: 'fighter', x: DOGFIGHT.x + 1500, z: DOGFIGHT.z - 6500, altitude: 2800, heading: 180 }
+    ],
+    timeLimit: 420,
+    objectives: [
+      {
+        text: 'Turn until a white box turns red, then press [Enter] to fire. Shoot one down.',
+        done: c => combatOf(c).downed >= 1
+      },
+      {
+        text: 'Shoot down the other. When MISSILE flashes, press [Space] for flares and turn hard.',
+        done: c => combatOf(c).downed >= 2
+      }
+    ],
+    failures: [outOfAirMissiles(2)]
+  },
+  {
+    id: 'intercept',
+    title: 'Intercept',
+    category: 'Air Combat',
+    aircraft: 'f35',
+    summary: 'Scramble an F-35 and down three bombers before they reach Coral Bay.',
+    briefing:
+      'Three bombers are crossing the sea from the east at 25,000 ft, heading for Coral Bay. Fly out to meet them, lock on, and shoot them down before any gets within 6 km of the city. They carry no missiles, but you only have four.',
+    start: {
+      kind: 'air',
+      x: CORAL_BAY.x + 18_000,
+      z: CORAL_BAY.z,
+      altitude: 6000,
+      heading: 90,
+      speed: 450
+    },
+    missiles: 4,
+    flares: 10,
+    enemies: [
+      // A staggered formation: the lead, then two trailing either side
+      bomber(CORAL_BAY.x + 42_000, CORAL_BAY.z),
+      bomber(CORAL_BAY.x + 44_000, CORAL_BAY.z - 700),
+      bomber(CORAL_BAY.x + 46_000, CORAL_BAY.z + 700)
+    ],
+    timeLimit: 480,
+    objectives: [
+      {
+        text: 'Fly east toward the bombers until their boxes appear ahead.',
+        done: c =>
+          c.combat?.enemies.some(
+            enemy => enemy.position.distanceTo(c.sim.position) < AIR_LOCK_RANGE
+          ) ?? false
+      },
+      {
+        text: 'Lock on and press [Enter]. Shoot down a bomber.',
+        done: c => combatOf(c).downed >= 1
+      },
+      { text: 'Shoot down all three.', done: c => combatOf(c).downed >= 3 }
+    ],
+    failures: [
+      {
+        reason:
+          'A bomber reached Coral Bay. Meet them farther out and fire as soon as the box turns red.',
+        failed: c =>
+          c.combat?.enemies.some(
+            enemy =>
+              enemy.alive &&
+              Math.hypot(enemy.position.x - CORAL_BAY.x, enemy.position.z - CORAL_BAY.z) < DEFENDED
+          ) ?? false
+      },
+      outOfAirMissiles(3)
     ]
   },
   {

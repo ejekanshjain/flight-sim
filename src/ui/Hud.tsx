@@ -93,7 +93,9 @@ type Lamp = {
 
 const LAMPS: Lamp[] = [
   { label: 'STALL', kind: 'warning', on: sim => sim.stallWarning },
-  { label: 'ENGINE FIRE', kind: 'warning', on: sim => sim.engines.some(engine => engine.fire) },
+  { label: 'FIRE', kind: 'warning', on: sim => sim.engines.some(engine => engine.fire) },
+  // An enemy missile homes on the aircraft
+  { label: 'MISSILE', kind: 'warning', on: () => game.combat.warning },
   {
     // Low, slow, throttled back, and the wheels are still up
     label: 'GEAR UP',

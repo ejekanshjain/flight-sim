@@ -14,6 +14,7 @@ import {
 import { Sound } from './audio'
 import { Bombs, type Impact } from './bombs'
 import { findCollision } from './collision'
+import { AirCombat, type CombatEvent } from './combat'
 import { Effects } from './effects'
 import { Gpws } from './gpws'
 import { type Mission, type MissionResult, MissionRunner, rememberPassed } from './missions'
@@ -26,6 +27,7 @@ import {
   loadSettings,
   saveSettings
 } from './settings'
+import { Storm } from './storm'
 import { Traffic } from './traffic'
 import { Wreck } from './wreck'
 
@@ -34,8 +36,11 @@ export type Status = 'menu' | 'flying' | 'paused' | 'crashed' | 'arrived' | 'fin
 export type CameraMode = 'chase' | 'cockpit'
 export type WindLevel = 'calm' | 'light' | 'strong'
 export type MapSize = 'small' | 'large' | 'hidden'
-/** Sky and visibility. Cloudy adds a low overcast deck, rain adds showers, fog cuts visibility. */
-export type Weather = 'clear' | 'cloudy' | 'rain' | 'fog'
+/**
+ * Sky and visibility. Cloudy adds a low overcast deck, rain adds showers, fog cuts visibility,
+ * and storm adds thunderstorm cells, lightning, downpours, and rough air.
+ */
+export type Weather = 'clear' | 'cloudy' | 'rain' | 'fog' | 'storm'
 export type TimeOfDay = 'morning' | 'noon' | 'evening' | 'night'
 
 /** Summary of a flight that ended parked at an airport. */
@@ -52,6 +57,10 @@ export type GameState = {
   camera: CameraMode
   /** Looking down from the bomb bay with the aiming cross. Tab switches it on and off. */
   bombsight: boolean
+  /** Photo mode: the flight holds still, the panels hide, and a free camera looks around. */
+  photo: boolean
+  /** The one line of photo mode help. H hides it for a clean picture. */
+  photoHint: boolean
   wind: WindLevel
   muted: boolean
   /** Live landing advice on screen. */
@@ -86,6 +95,8 @@ export const WIND_FROM = 60
 // Holding Enter over a city drops a string of bombs: the first repeat after this many
 // seconds, then one every gap
 const RIPPLE_START = 0.6
+// An explosion that carries no motion of its own
+const STILL = new Vector3()
 const RIPPLE_GAP = 0.7
 // Burning ruins shown at once, newest first, so a flattened city stays within the smoke budget
 const BURNING_RUINS = 20
@@ -134,6 +145,8 @@ class Game {
   })
   /** Current air mass velocity in m/s, including gusts. */
   readonly wind = new Vector3()
+  /** Thunderstorm air, windshear alert, and lightning. */
+  readonly storm = new Storm()
   /** Seconds the boats, balloons, birds, and other aircraft have been moving. It stops while paused. */
   sceneryTime = 0
   /** Rendered frames per second, smoothed. */
@@ -143,6 +156,7 @@ class Game {
   readonly traffic = new Traffic()
   /** The B-2's bomb bay on bombing missions; empty otherwise. */
   readonly bombs = new Bombs()
+  readonly combat = new AirCombat()
   // A won bombing mission waiting for its last explosion to play out
   private won: { result: MissionResult; left: number } | null = null
   private readonly lastBlast = new Vector3()
@@ -156,6 +170,8 @@ class Game {
   private state: GameState = {
     status: 'menu',
     bombsight: false,
+    photo: false,
+    photoHint: true,
     ...savedState(),
     crash: null,
     crashShown: false,
@@ -305,11 +321,14 @@ class Game {
     if (approach) this.nav.select(approach, this.sim)
     this.missions.start(mission, this.sim)
     this.won = null
+    // Missiles go to air combat when there are enemy aircraft, otherwise to ground targets
+    const enemies = mission.enemies ?? []
+    this.combat.load(enemies, enemies.length ? (mission.missiles ?? 0) : 0, mission.flares ?? 0)
     this.bombs.load(
       mission.bombs ?? 0,
       mission.targets ?? [],
       mission.guided,
-      mission.missiles ?? 0
+      enemies.length ? 0 : (mission.missiles ?? 0)
     )
   }
 
@@ -404,9 +423,22 @@ class Game {
   }
 
   pause = () => {
-    if (this.state.status !== 'flying') return
+    // Photo mode already holds the flight still, so leaving the window keeps the shot
+    if (this.state.status !== 'flying' || this.state.photo) return
     this.pilot.releaseAll()
     this.setState({ status: 'paused' })
+  }
+
+  /** Opens photo mode while flying, or closes it. The flight holds still while it is open. */
+  togglePhoto = () => {
+    if (this.state.photo) {
+      this.setState({ photo: false })
+      return
+    }
+    if (this.state.status !== 'flying') return
+    this.pilot.releaseAll()
+    this.rippleHeld = false
+    this.setState({ photo: true, photoHint: true })
   }
 
   resume = () => {
@@ -464,7 +496,8 @@ class Game {
   /** Advances the game by one rendered frame of `delta` seconds. */
   frame(delta: number) {
     const dt = Math.min(delta, 0.1)
-    const { status } = this.state
+    // Photo mode holds the whole world still, as a pause does
+    const status = this.state.photo ? 'paused' : this.state.status
     if (delta > 0) this.frameRate += (1 / delta - this.frameRate) * 0.05
     if (status !== 'paused') {
       this.sceneryTime += dt
@@ -477,7 +510,7 @@ class Game {
       const step = dt / steps
       for (let i = 0; i < steps; i++) {
         this.time += step
-        this.updateWind()
+        this.updateWind(step)
         this.sim.step(step, this.pilot.controls, this.wind)
         // Trees, buildings, balloons, boats, and other aircraft are solid
         this.sim.crash ??= findCollision(this.sim, this.sceneryTime, this.traffic, this.bombs.ruins)
@@ -485,12 +518,19 @@ class Game {
       }
       if (this.sim.crash) this.breakUp(this.sim.crash)
       else {
+        this.gpws.windshear = this.storm.detectShear(dt, this.sim)
+        if (this.state.weather === 'storm') {
+          this.effects.shake = Math.max(this.effects.shake, this.storm.jolt(dt, this.sim))
+        }
         this.gpws.update(dt, this.sim, this.pilot.controls, this.nav)
         if (this.effects.emitFlight(dt, this.sim, ISLAND_GROUND)) this.sound.chirp()
         this.burnEngines(dt)
         this.trackFlight()
         this.dropString(dt)
         for (const impact of this.bombs.update(dt, this.sim, ISLAND_GROUND)) this.blast(impact)
+        for (const event of this.combat.update(dt, this.sim, ISLAND_GROUND, this.effects)) {
+          this.onCombat(event)
+        }
         this.burnTargets(dt)
         this.checkMission(dt)
       }
@@ -502,6 +542,10 @@ class Game {
     }
     if (status === 'flying' || status === 'crashed') this.effects.update(dt, this.wind)
     const audible = !this.state.muted && (status === 'flying' || status === 'crashed')
+    if (status !== 'paused') {
+      const strike = this.storm.lightning.update(dt, this.state.weather === 'storm', this.focus)
+      if (strike !== null && audible) this.sound.thunder(strike)
+    }
     this.sound.update(this.sim, audible ? status : 'silent')
     for (const listener of this.frameListeners) listener()
   }
@@ -511,6 +555,18 @@ class Game {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return
       const { status } = this.state
+      // Photo mode takes the keyboard: the free camera reads its own keys, the pilot gets none
+      if (this.state.photo) {
+        if (event.code === 'Tab' || event.code === 'Space') event.preventDefault()
+        if (event.repeat) return
+        if (event.code === 'Backquote' || event.code === 'Escape') this.togglePhoto()
+        else if (event.code === 'KeyH') this.setState({ photoHint: !this.state.photoHint })
+        return
+      }
+      if (event.code === 'Backquote' && status === 'flying' && !event.repeat) {
+        this.togglePhoto()
+        return
+      }
       if (event.code === 'Escape') {
         if (status === 'flying') this.pause()
         else this.resume()
@@ -529,6 +585,10 @@ class Game {
       if (event.code === 'Enter' && status === 'flying') {
         event.preventDefault()
         if (event.repeat) return
+        if (this.combat.active) {
+          this.combat.fire(this.sim)
+          return
+        }
         // Missiles fire straight from the normal view, with no sight to open
         if (this.bombs.missiles > 0) {
           this.bombs.fire(this.sim)
@@ -547,6 +607,9 @@ class Game {
         return
       }
       if (status !== 'flying') return
+      // In the air in a fight, Space drops flares; on the ground it still works the brakes
+      const fighting = this.combat.active && !this.sim.onGround
+      if (event.code === 'Space' && fighting && !event.repeat) this.combat.dropFlares(this.sim)
       if (event.code === 'KeyC' && !event.repeat) this.toggleCamera()
       else if (event.code === 'KeyM' && !event.repeat) this.toggleMap()
       else if (event.code === 'KeyN' && !event.repeat) {
@@ -576,10 +639,6 @@ class Game {
     }
   }
 
-  /**
-   * Notes the liftoff and the touchdown, and ends the flight once the aircraft is
-   * parked on an apron with the parking brake set and the engines stopped.
-   */
   /** Advances the mission's objectives, and ends the flight once it passes or fails. */
   private checkMission(dt: number) {
     if (this.won) {
@@ -594,10 +653,11 @@ class Game {
       nav: this.nav,
       parkedAt: this.parkedAirport(),
       bombs: this.bombs,
-      bombsight: this.state.bombsight
+      bombsight: this.state.bombsight,
+      combat: this.combat
     })
     if (!result) return
-    if (result.passed && this.bombs.targets.length > 0) {
+    if (result.passed && (this.bombs.targets.length > 0 || this.combat.active)) {
       this.won = { result, left: BLAST_REPLAY }
       return
     }
@@ -613,15 +673,37 @@ class Game {
     this.setState({ status: 'finished', missionResult: result })
   }
 
-  /**
-   * A bomb going off: a fireball and debris on land, spray at sea. The sound and the shake
-   * fade with distance, so a blast far below rumbles rather than rattles.
-   */
   /** Where the winning bomb landed, while the view circles its blast before the results. */
   get blastReplay() {
     return this.won ? this.lastBlast : null
   }
 
+  /**
+   * Air combat outcomes: an enemy blown apart in the air, its wreck striking the ground, or
+   * a missile hitting the player, which ends the flight.
+   */
+  private onCombat(event: CombatEvent) {
+    if (event.kind === 'hit') {
+      this.sim.crash ??= 'missile'
+      return
+    }
+    if (event.kind === 'launch') return
+    const distance = event.at.distanceTo(this.sim.position)
+    const water = event.kind === 'wreck' && ISLAND_GROUND.heightAt(event.at.x, event.at.z) < 0
+    if (water) this.effects.splash(event.at, 2)
+    else {
+      const power = event.kind === 'kill' ? 1.8 : 1.2
+      this.effects.explode(event.at, STILL, power, event.kind === 'wreck')
+    }
+    if (event.kind === 'kill') this.lastBlast.copy(event.at)
+    if (!this.state.muted)
+      this.sound.crash(Math.max(0.15, Math.min(1, 1.1 - distance / 5000)), water)
+  }
+
+  /**
+   * A bomb going off: a fireball and debris on land, spray at sea. The sound and the shake
+   * fade with distance, so a blast far below rumbles rather than rattles.
+   */
   private blast(impact: Impact) {
     this.lastBlast.copy(impact.at)
     const distance = impact.at.distanceTo(this.sim.position)
@@ -706,6 +788,10 @@ class Game {
     )
   }
 
+  /**
+   * Notes the liftoff and the touchdown, and ends the flight once the aircraft is
+   * parked on an apron with the parking brake set and the engines stopped.
+   */
   private trackFlight() {
     const { sim } = this
     if (!sim.onGround) {
@@ -756,9 +842,11 @@ class Game {
   private fly() {
     // Bombers carry a load in free flight too. A mission loads its own after this.
     this.bombs.load(this.sim.spec.bombBay ?? 0, [])
+    this.combat.clear()
     this.rippleHeld = false
     this.pilot.releaseAll()
     this.gpws.reset(this.sim)
+    this.storm.reset()
     this.nav.load(null, this.sim)
     this.sound.start()
     this.liftoffTime = null
@@ -792,8 +880,11 @@ class Game {
     Object.assign(this.pilot.controls, { flapNotch, gearDown, ...hold })
   }
 
-  /** Steady wind with gusts and small, slow direction swings. */
-  private updateWind() {
+  /**
+   * Steady wind with gusts and small, slow direction swings. Storm weather and a mission's
+   * microburst add their own air, with random gusts advanced by `dt` seconds.
+   */
+  private updateWind(dt = 0) {
     const speed = WIND_SPEEDS[this.state.wind]
     const t = this.time
     // Gusts come every few seconds, well away from the slow 15 to 35 second swing in speed
@@ -808,6 +899,9 @@ class Game {
       speed * 0.06 * Math.sin(t * 1.9 + 0.3),
       -Math.cos(toward) * speed * gust
     )
+    // Outside a storm with no microburst this adds nothing, and clears the windshear input
+    const { weather, mission } = this.state
+    this.storm.addWind(dt, this.sim, weather === 'storm', mission?.microburst ?? null, this.wind)
   }
 
   private setState(patch: Partial<GameState>) {

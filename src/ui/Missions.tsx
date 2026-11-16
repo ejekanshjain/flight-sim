@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useRef, useState } from 'react'
 import { bombAdvice, missileAdvice } from '../game/bombs'
 import { type Advice, landingAdvice } from '../game/coach'
+import { combatAdvice } from '../game/combat'
 import { game, useGame } from '../game/game'
 import {
   MISSION_CATEGORIES,
@@ -26,7 +27,8 @@ const CATEGORY_TITLES: Record<MissionCategory, string> = {
   Airline: 'Airline Flights',
   Challenge: 'Challenges',
   Bombing: 'Bombing Range',
-  Strike: 'Air Strike'
+  Strike: 'Air Strike',
+  'Air Combat': 'Air Combat'
 }
 
 const CATEGORY_NOTES: Record<MissionCategory, string> = {
@@ -35,7 +37,8 @@ const CATEGORY_NOTES: Record<MissionCategory, string> = {
   Airline: 'Passengers aboard, gate to gate.',
   Challenge: 'Harder flying when things go wrong.',
   Bombing: 'The B-2 on the Gull Point practice range.',
-  Strike: 'Fighters with guided missiles on the same range.'
+  Strike: 'Fighters with guided missiles on the same range.',
+  'Air Combat': 'Heat-seekers and flares against enemy aircraft that fight back.'
 }
 
 /** Mission text with keys in square brackets drawn as key caps. */
@@ -77,7 +80,7 @@ function conditions(mission: Mission) {
   const parts = [
     mission.weather &&
       mission.weather !== 'clear' &&
-      { cloudy: 'low cloud', rain: 'rain', fog: 'fog' }[mission.weather],
+      { cloudy: 'low cloud', rain: 'rain', fog: 'fog', storm: 'thunderstorms' }[mission.weather],
     mission.time &&
       mission.time !== 'noon' &&
       { morning: 'morning', evening: 'sunset', night: 'night' }[mission.time],
@@ -244,7 +247,11 @@ export function MissionCard({ mission }: { mission: Mission }) {
           </li>
         ))}
       </ol>
-      {mission.missiles !== undefined && <MissilePanel total={mission.missiles} />}
+      {mission.enemies ? (
+        <CombatPanel total={mission.missiles ?? 0} enemies={mission.enemies.length} />
+      ) : (
+        mission.missiles !== undefined && <MissilePanel total={mission.missiles} />
+      )}
       {mission.bombs !== undefined && (
         <BombPanel total={mission.bombs} demolish={mission.demolish} />
       )}
@@ -255,6 +262,50 @@ export function MissionCard({ mission }: { mission: Mission }) {
         >
           <KeyText text={alert.text} />{' '}
           <span className="text-warn tabular-nums">Mission fails in {alert.left} s</span>
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Missiles and flares left, enemies down, and advice: the missile warning, the lock, or
+ * which way to turn.
+ */
+function CombatPanel({ total, enemies }: { total: number; enemies: number }) {
+  const count = useRef<HTMLSpanElement>(null)
+  const [advice, setAdvice] = useState('')
+  const [warning, setWarning] = useState(false)
+  const shown = useRef({ text: '', at: 0 })
+  useTelemetry(
+    useCallback(
+      (sim: FlightSim) => {
+        const { combat } = game
+        setText(
+          count.current,
+          `Missiles ${combat.ammo} of ${total} · Flares ${combat.flaresLeft} · Down ${combat.downed} of ${enemies}`
+        )
+        // The missile warning shows at once; other advice holds half a second to be read
+        const next = combatAdvice(combat, sim) ?? ''
+        const now = performance.now()
+        if (next === shown.current.text) return
+        if (!combat.warning && now - shown.current.at < 500) return
+        shown.current = { text: next, at: now }
+        setAdvice(next)
+        setWarning(combat.warning)
+      },
+      [total, enemies]
+    )
+  )
+  return (
+    <div className="border-ink/25 mt-2 border-t pt-2">
+      <span ref={count} className="font-bold tabular-nums" />
+      {advice && (
+        <p
+          className="data-[warning=true]:bg-warn mt-1 rounded-sm leading-snug data-[warning=true]:px-1.5 data-[warning=true]:py-0.5 data-[warning=true]:font-bold data-[warning=true]:text-white"
+          data-warning={warning}
+        >
+          <KeyText text={advice} />
         </p>
       )}
     </div>

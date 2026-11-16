@@ -6,9 +6,12 @@ import { APPROACHES, onCentreline, pathAltitude } from '../world/approaches'
 import { AIRPORTS, fromStrip, heightAt, ISLAND_GROUND, RANGE } from '../world/island'
 import { Bombs, bombAdvice } from './bombs'
 import { landingAdvice } from './coach'
+import { AirCombat } from './combat'
+import { Effects } from './effects'
 import { MISSIONS, MissionRunner } from './missions'
 import { Navigator } from './navigation'
 import { Pilot } from './pilot'
+import { Storm } from './storm'
 
 const STEP = 1 / 120
 const CALM = new Vector3()
@@ -315,7 +318,8 @@ test('a crew that puts out both fires and ditches gently passes Double Engine Fi
 })
 
 test('a scripted crew passes every missile strike mission', () => {
-  for (const mission of MISSIONS.filter(candidate => candidate.missiles)) {
+  // Missiles at ground targets; the air combat missions have their own test
+  for (const mission of MISSIONS.filter(candidate => candidate.missiles && !candidate.enemies)) {
     const spec = HANGAR.find(candidate => candidate.id === mission.aircraft)
     const start = mission.start
     if (!spec || start.kind !== 'air') throw new Error('Missing mission')
@@ -487,6 +491,141 @@ test('a racing pilot banking steeply flies the Mustang lap in time', () => {
     const bank = Math.max(-0.7, Math.min(0.7, turnFrom(track, pilot.autopilot.heading) * 4))
     pilot.controls.roll = limit((bank - sim.bank) * 1.5 + sim.angularVelocity.z * 0.3)
   })
+  expect(sim.crash).toBeNull()
+  expect(result).toMatchObject({ passed: true })
+})
+
+/** A repeatable stand-in for Math.random, so a fight with random flares plays the same way. */
+function seeded(seed: number) {
+  let state = seed
+  return () => {
+    state = (state + 0x6d2b79f5) | 0
+    let mix = Math.imul(state ^ (state >>> 15), 1 | state)
+    mix = (mix + Math.imul(mix ^ (mix >>> 7), 61 | mix)) ^ mix
+    return ((mix ^ (mix >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+test('a fighter pilot who turns hard and uses flares wins both air combat missions', () => {
+  const random = Math.random
+  Math.random = seeded(7)
+  try {
+    for (const mission of MISSIONS.filter(candidate => candidate.enemies)) {
+      const { sim, pilot } = airStart(mission.id)
+      pilot.engage(true, sim)
+      const combat = new AirCombat()
+      combat.load(mission.enemies ?? [], mission.missiles ?? 0, mission.flares ?? 0)
+      const effects = new Effects()
+      const nav = new Navigator()
+      const runner = new MissionRunner()
+      runner.start(mission, sim)
+      const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null, combat }
+      let result = null
+      let breakUntil = -1
+      let lastFlare = -9
+      let side = 1
+      for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
+        // Flares and a hard break when a missile comes; otherwise chase an enemy with no
+        // missile on its way yet, leading it a little
+        if (combat.warning && time - lastFlare > 1.2) {
+          combat.dropFlares(sim)
+          lastFlare = time
+          breakUntil = time + 3
+          side = -side
+        }
+        const free = combat.enemies.filter(
+          enemy => enemy.alive && !combat.missiles.some(missile => missile.target === enemy)
+        )
+        const distance = (enemy: (typeof free)[number]) => enemy.position.distanceTo(sim.position)
+        const nearest = free.sort((a, b) => distance(a) - distance(b))[0]
+        if (time < breakUntil) pilot.autopilot.heading = sim.heading + side * 1.2
+        else if (nearest) {
+          const lead = nearest.position.clone().addScaledVector(nearest.velocity, 2)
+          pilot.autopilot.heading = Math.atan2(lead.x - sim.position.x, sim.position.z - lead.z)
+          pilot.autopilot.hold = Math.max(800, nearest.position.y)
+        }
+        if (combat.lock >= 0) combat.fire(sim)
+        pilot.update(STEP, sim, nav)
+        // Bank up to 77° toward the chosen heading and slow toward 380 kt in a hard turn
+        const track = Math.atan2(sim.velocity.x, -sim.velocity.z)
+        const error = turnFrom(track, pilot.autopilot.heading)
+        const bank = Math.max(-1.35, Math.min(1.35, error * 3))
+        pilot.controls.roll = limit((bank - sim.bank) * 1.5 + sim.angularVelocity.z * 0.3)
+        const slow = sim.indicatedAirspeed / KNOT > 380 ? 0 : 0.9
+        pilot.controls.throttle = Math.abs(error) > 0.5 ? slow : 1
+        sim.step(STEP, pilot.controls, CALM)
+        for (const event of combat.update(STEP, sim, ISLAND_GROUND, effects)) {
+          if (event.kind === 'hit') sim.crash = 'missile'
+        }
+        result = runner.update(STEP, context)
+      }
+      expect(sim.crash).toBeNull()
+      expect(result).toMatchObject({ passed: true })
+    }
+  } finally {
+    Math.random = random
+  }
+})
+
+test('a crew on the autopilot who adds full power at the WINDSHEAR call passes Storm Approach', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'storm-approach')
+  const spec = HANGAR.find(candidate => candidate.id === 'a320')
+  const start = mission?.start
+  const approach = APPROACHES.find(candidate => candidate.id === mission?.approach)
+  if (!mission || !spec || start?.kind !== 'approach' || !approach)
+    throw new Error('Missing mission')
+  // Start as the game does: on the glide path with flaps 2
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  const { x, z } = onCentreline(approach.end, start.distance)
+  const altitude = pathAltitude(approach.end, approach.glide, start.distance)
+  const course = (approach.end.heading * Math.PI) / 180
+  sim.placeInAir(x, altitude, z, course, start.speed * KNOT)
+  const pilot = new Pilot()
+  pilot.resetForAir(spec, sim)
+  // The game's light wind from 060°, plus the storm's gusts and the mission's microburst
+  const storm = new Storm()
+  storm.reset()
+  const wind = new Vector3()
+  const blow = (dt: number) => {
+    wind.set(-Math.sin(60 * DEGREE) * 4, 0, Math.cos(60 * DEGREE) * 4)
+    storm.addWind(dt, sim, true, mission.microburst ?? null, wind)
+  }
+  blow(0)
+  const flapNotch = start.flapNotch ?? 0
+  Object.assign(pilot.controls, {
+    flapNotch,
+    ...sim.settleOnPath(approach.glide, flapNotch, false, wind)
+  })
+  const nav = new Navigator()
+  nav.select(approach, sim)
+  const runner = new MissionRunner()
+  runner.start(mission, sim)
+  const context = { sim, controls: pilot.controls, pilot, nav, parkedAt: null }
+  const tap = (code: string) => {
+    pilot.press(code, false, sim, nav)
+    pilot.release(code)
+  }
+  // As the first step says: gear, autopilot, autothrottle, and the approach mode of [T]
+  for (const code of ['KeyG', 'KeyZ', 'KeyX']) tap(code)
+  pilot.flyApproach(true, sim, nav)
+  let warned = false
+  let result = null
+  for (let time = 0; time < 400 && !result && !sim.crash; time += STEP) {
+    // One more notch of flap every 2 seconds, up to full
+    if (pilot.controls.flapNotch < 4 && Math.round(time / STEP) % 240 === 0) tap('KeyF')
+    nav.update(sim)
+    pilot.update(STEP, sim, nav)
+    // At the WINDSHEAR call, full power until the speed is back above the approach speed
+    const shear = storm.detectShear(STEP, sim)
+    warned ||= shear
+    if (shear && sim.indicatedAirspeed < (spec.approachSpeed + 15) * KNOT) {
+      pilot.controls.throttle = 1
+    }
+    blow(STEP)
+    sim.step(STEP, pilot.controls, wind)
+    result = runner.update(STEP, context)
+  }
+  expect(warned).toBe(true)
   expect(sim.crash).toBeNull()
   expect(result).toMatchObject({ passed: true })
 })

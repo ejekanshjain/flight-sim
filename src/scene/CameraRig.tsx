@@ -50,6 +50,8 @@ export function CameraRig() {
   }, [camera, mode, bombsight])
 
   useFrame((_, delta) => {
+    // The free camera of photo mode has the view until it closes
+    if (game.getState().photo) return
     const { sim, wreck, effects, bombs } = game
     const view = sim.spec.camera
     const circle = orbit.current

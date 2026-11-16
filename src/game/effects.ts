@@ -452,6 +452,39 @@ export class Effects {
     }
   }
 
+  /** A burning flare: a white-hot point with a short wisp of smoke, drawn once a frame. */
+  flare(at: Vector3) {
+    this.add({
+      x: at.x,
+      y: at.y,
+      z: at.z,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      life: 0.1,
+      size: 5,
+      growTo: 3,
+      color: SPARK,
+      opacity: 1,
+      glow: true
+    })
+    this.add({
+      x: at.x,
+      y: at.y,
+      z: at.z,
+      vx: 0,
+      vy: 0.5,
+      vz: 0,
+      life: random(1.5, 2.5),
+      size: 1,
+      growTo: random(4, 6),
+      color: VAPOUR,
+      fadeTo: ASH,
+      opacity: 0.4,
+      drag: 0.5
+    })
+  }
+
   /** A missile's rocket flame and the white smoke trail it leaves hanging in the air. */
   missileTrail(at: Vector3, dt: number) {
     this.add({

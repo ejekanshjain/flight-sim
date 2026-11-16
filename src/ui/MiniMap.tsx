@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { game } from '../game/game'
+import { game, useGame } from '../game/game'
+import { STORM_CELLS } from '../game/storm'
 import type { FlightSim } from '../sim/flight-sim'
 import { AIRPORTS, fromStrip, heightAt, WORLD_SIZE } from '../world/island'
 import { DEGREES, useTelemetry } from './telemetry'
@@ -60,6 +61,7 @@ const percent = (metres: number) => `${(metres / WORLD_SIZE + 0.5) * 100}%`
 
 /** Map of the whole world with the airports, the aircraft's position and heading, and other traffic. */
 export function MiniMap({ large }: { large: boolean }) {
+  const storm = useGame(state => state.weather === 'storm')
   const [windowHeight, setWindowHeight] = useState(window.innerHeight)
   useEffect(() => {
     const update = () => setWindowHeight(window.innerHeight)
@@ -129,6 +131,19 @@ export function MiniMap({ large }: { large: boolean }) {
       style={{ width: size, height: size }}
     >
       <canvas ref={canvas} width={RESOLUTION} height={RESOLUTION} className="size-full" />
+      {/* Storm cells show as weather radar returns: red in the core, amber and green around it */}
+      {storm &&
+        STORM_CELLS.map(cell => (
+          <span
+            key={`${cell.x} ${cell.z}`}
+            className="absolute aspect-square -translate-1/2 rounded-full bg-[radial-gradient(circle,#e3412f_0%,#f2b33b_30%,#5fbf4ab0_52%,transparent_70%)]"
+            style={{
+              left: percent(cell.x),
+              top: percent(cell.z),
+              width: `${((cell.radius * 4) / WORLD_SIZE) * 100}%`
+            }}
+          />
+        ))}
       <span className="absolute top-1 left-1.5 text-xs font-bold text-white drop-shadow">N ↑</span>
       <span className="absolute right-1.5 bottom-1 text-xs text-white/85 drop-shadow">
         <kbd className="font-sans font-bold">M</kbd> {large ? 'hides the map' : 'enlarges the map'}
