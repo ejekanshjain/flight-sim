@@ -6,6 +6,8 @@ A flight simulator that runs in your browser. Fly twelve real aircraft, from a C
 
 No download or sign-in. It runs on a keyboard in any modern desktop browser.
 
+A friend has built a VR version of the game. Play it at [flight-sim-vr.vercel.app](https://flight-sim-vr.vercel.app/), and find its source at [jkugsiya/flight-sim-vr](https://github.com/jkugsiya/flight-sim-vr).
+
 ## What You Can Do
 
 - **Fly free:** pick an aircraft and an airport, then start cold at the stand, lined up on the runway, or already in the air. Add a destination for a flight plan the autopilot can follow.

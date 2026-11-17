@@ -1700,8 +1700,8 @@ export const MISSIONS: Mission[] = [
     title: 'Ace in a Day',
     category: 'Air Combat',
     aircraft: 'f16',
-    summary: 'Three waves of fighters, landing between each to refuel and rearm.',
-    briefing: `Enemy fighters are attacking Eastmark in waves of two, three, and four. Take off and meet each wave over the sea. Between waves, land at Eastmark and stop on the runway: the ground crew refuels and reloads you in 15 seconds. Run out of missiles mid-fight and you can land to reload then too. Nine kills make you an ace.`,
+    summary: 'Three waves of fighters. Land between them to refuel and rearm when you run low.',
+    briefing: `Enemy fighters are attacking Eastmark in waves of two, three, and four. Take off and meet each wave over the sea. The next wave comes at once if you carry a missile for each of its fighters and over a third of your fuel. Otherwise, land at Eastmark and stop on the runway: the ground crew refuels and reloads you in 15 seconds. Run out of missiles mid-fight and you can land to reload then too. Nine kills make you an ace.`,
     start: { kind: 'runway', airport: ACE_BASE },
     base: ACE_BASE,
     missiles: 8,
@@ -1718,19 +1718,11 @@ export const MISSIONS: Mission[] = [
         done: c => combatOf(c).downed >= 2
       },
       {
-        text: 'Land at Eastmark and stop on the runway to refuel and rearm.',
-        done: c => (c.combat?.rearmedAfter ?? 0) >= 1
-      },
-      {
-        text: 'Take off and shoot down the second wave: three fighters.',
+        text: 'Shoot down the second wave: three fighters. Below 3 missiles or a third of your fuel, land at Eastmark to rearm first.',
         done: c => combatOf(c).downed >= 5
       },
       {
-        text: 'Land and stop on the runway to rearm again.',
-        done: c => (c.combat?.rearmedAfter ?? 0) >= 2
-      },
-      {
-        text: 'Take off and shoot down the last wave: four fighters.',
+        text: 'Shoot down the last wave: four fighters. Below 4 missiles or a third of your fuel, land at Eastmark to rearm first.',
         done: c => combatOf(c).downed >= 9
       },
       {

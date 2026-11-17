@@ -162,6 +162,9 @@ const WAVE_HEIGHT = 150
 // Seconds the ground crew takes to refuel and reload, and the fuel share they fill to
 const REARM_SECONDS = 15
 const REARM_FUEL = 1
+// With a missile for each fighter in the next wave and over this share of fuel, the next
+// wave comes without a landing
+const STAY_UP_FUEL = 1 / 3
 // Below this height in metres and within this distance of a base, the player is under its
 // guns. Enemies then circle this far from the player until it climbs out.
 const SHELTER_HEIGHT = 300
@@ -206,7 +209,7 @@ export class AirCombat {
   escort: Escort | null = null
   /** Waves sent so far, out of `waves`, and the wave count when the player last rearmed. */
   wave = 0
-  rearmedAfter = 0
+  private rearmedAfter = 0
   /** Share of the ground crew's work done while stopped at the base, 0 to 1. */
   rearm = 0
   private waves: EnemySpawn[][] = []
@@ -270,10 +273,17 @@ export class AirCombat {
     return this.enemies.length + this.waves.slice(this.wave).reduce((sum, w) => sum + w.length, 0)
   }
 
+  /** True when the player has a missile for each enemy in the next wave and fuel to spare. */
+  stocked(sim: FlightSim) {
+    const next = this.waves[this.wave]
+    const fuel = sim.fuel > sim.spec.fuelCapacity * STAY_UP_FUEL
+    return next !== undefined && this.ammo >= next.length && fuel
+  }
+
   /** True when a wave is down and the next waits for the player to land at the base. */
-  get awaitingRearm() {
+  awaitingRearm(sim: FlightSim) {
     const between = this.wave < this.waves.length && this.rearmedAfter < this.wave
-    return this.base.length > 0 && between && this.alive === 0
+    return this.base.length > 0 && between && this.alive === 0 && !this.stocked(sim)
   }
 
   /** Sends enemies into the fight, placing those that start near the escort around it. */
@@ -374,9 +384,10 @@ export class AirCombat {
     this.warning = this.missiles.some(missile => missile.target === 'player')
     this.updateLock(sim)
     this.resupply(dt, sim, events)
-    // The next wave comes once this one is down and the player is back in the air
+    // The next wave comes once this one is down and the player is in the air, rearmed or
+    // still carrying enough missiles and fuel
     const next = this.waves[this.wave]
-    const ready = this.base.length === 0 || this.rearmedAfter >= this.wave
+    const ready = this.base.length === 0 || this.rearmedAfter >= this.wave || this.stocked(sim)
     if (next && this.alive === 0 && ready && !sim.onGround && sim.altitudeAgl > WAVE_HEIGHT) {
       this.wave++
       this.launch(next)
@@ -396,7 +407,7 @@ export class AirCombat {
       this.ammo < this.loadout.missiles ||
       this.flaresLeft < this.loadout.flares ||
       sim.fuel < sim.spec.fuelCapacity * REARM_FUEL * 0.95 ||
-      this.awaitingRearm
+      this.awaitingRearm(sim)
     if (!parked || !needed) {
       this.rearm = 0
       return
@@ -703,7 +714,7 @@ export function combatAdvice(combat: AirCombat, sim: FlightSim, base?: string): 
       const seconds = Math.ceil((1 - combat.rearm) * REARM_SECONDS)
       return `The ground crew is refuelling and reloading: ${seconds} s. Keep still.`
     }
-    if (base && combat.alive === 0 && !combat.awaitingRearm && combat.total > combat.downed) {
+    if (base && combat.alive === 0 && !combat.awaitingRearm(sim) && combat.total > combat.downed) {
       return 'Ready. Take off: the next wave comes once you climb away.'
     }
     return null
@@ -718,8 +729,9 @@ export function combatAdvice(combat: AirCombat, sim: FlightSim, base?: string): 
     const km = (locked.position.distanceTo(sim.position) / 1000).toFixed(1)
     return `Locked on the ${name(locked)}, ${km} km: press [Enter] to fire.`
   }
-  if (base && combat.awaitingRearm) {
-    return `Wave down. Land at ${base} and stop on the runway to rearm and refuel.`
+  if (base && combat.awaitingRearm(sim)) {
+    const short = sim.fuel > sim.spec.fuelCapacity * STAY_UP_FUEL ? 'missiles' : 'fuel'
+    return `Wave down, but you are low on ${short}. Land at ${base} and stop on the runway to rearm.`
   }
   if (combat.ammo <= 0) {
     if (combat.missiles.some(missile => missile.fromPlayer)) return 'Missile away.'

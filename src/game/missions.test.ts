@@ -807,6 +807,32 @@ test('enemies wait within reach of the base while the player is down rearming', 
   }
 })
 
+test('the next wave in Ace in a Day comes at once only with enough missiles and fuel', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'ace-in-a-day')
+  const spec = HANGAR.find(candidate => candidate.id === 'f16')
+  const setup = mission && combatSetup(mission)
+  const runway = AIRPORTS.find(airport => airport.code === 'EMK')?.runways[0]
+  if (!spec || !setup || !runway) throw new Error('Missing mission')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  sim.placeInAir(runway.x, heightAt(runway.x, runway.z) + 2500, runway.z, 0, 200)
+  const combat = new AirCombat()
+  const effects = new Effects()
+  // Calls the first wave, downs it with `ammo` missiles left, and returns the enemies flying
+  const afterFirstWave = (ammo: number, fuelShare: number) => {
+    combat.load(setup)
+    combat.update(STEP, sim, ISLAND_GROUND, effects)
+    for (const enemy of combat.enemies) enemy.alive = false
+    combat.ammo = ammo
+    sim.fuel = spec.fuelCapacity * fuelShare
+    combat.update(STEP, sim, ISLAND_GROUND, effects)
+    return combat.alive
+  }
+  expect(afterFirstWave(3, 0.5)).toBe(3)
+  expect(afterFirstWave(2, 0.5)).toBe(0)
+  expect(combat.awaitingRearm(sim)).toBe(true)
+  expect(afterFirstWave(8, 0.3)).toBe(0)
+})
+
 test('a pilot who lands to rearm between waves shoots down all three in Ace in a Day', () => {
   const random = Math.random
   Math.random = seeded(11)
@@ -853,13 +879,14 @@ test('a pilot who lands to rearm between waves shoots down all three in Ace in a
     let landings = 0
     let lowest = Number.POSITIVE_INFINITY
     for (let time = 0; time < mission.timeLimit && !result && !sim.crash; time += STEP) {
-      const waveDown = combat.alive === 0 && (combat.awaitingRearm || combat.downed === enemies)
+      const waveDown =
+        combat.alive === 0 && (combat.awaitingRearm(sim) || combat.downed === enemies)
       const empty = combat.ammo === 0 && !combat.missiles.some(missile => missile.fromPlayer)
       if (sim.onGround) {
         // Brake to a stop and wait for the ground crew, then go again
         pilot.controls.brake = 1
         pilot.controls.throttle = 0
-        if (combat.rearm === 0 && !combat.awaitingRearm && combat.downed < enemies) {
+        if (combat.rearm === 0 && !combat.awaitingRearm(sim) && combat.downed < enemies) {
           if (combat.ammo > 0 && sim.groundSpeed < 1.5) climbOut()
         }
       } else if (pilot.autopilot.on && (waveDown || (empty && combat.alive > 0))) {
