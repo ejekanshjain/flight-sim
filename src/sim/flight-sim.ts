@@ -6,6 +6,7 @@ import {
   KNOT,
   type PistonEngine,
   ROLLING_FRICTION,
+  type RotorSpec,
   SEA_LEVEL_DENSITY,
   speedOfSound
 } from './aircraft'
@@ -118,7 +119,57 @@ const AUTOBRAKE = 0.5
 // Wheel height in metres, 50 ft, below which fly-by-wire hands the flare to the pilot
 const FLARE_LAW_HEIGHT = 15
 
+// Helicopter rotor. The downwash is never slower than MIN_FLOW m/s through the disc, and
+// follows the thrust in INFLOW_LAG seconds. Ground cushion fades past HOVER_INFLOW m/s of
+// forward speed and adds at most MAX_CUSHION. Induced power carries INDUCED_LOSS for tip
+// losses; the tail rotor takes TAIL_SHARE of the main rotor's power, the gearbox and
+// generators ACCESSORY_POWER watts.
+const MIN_FLOW = 1
+const INFLOW_LAG = 0.15
+const HOVER_INFLOW = 10
+const MAX_CUSHION = 1.2
+const INDUCED_LOSS = 1.15
+const TAIL_SHARE = 0.08
+const ACCESSORY_POWER = 30_000
+// Rotor speed as a share of 100%: the most it reaches in a glide, how fast the governor
+// spins it up per second after a start, and where the low rotor warning sounds
+const MAX_ROTOR_SPEED = 1.15
+const SPIN_UP_RATE = 0.08
+const LOW_ROTOR = 0.92
+// Stability system. Between these airspeeds in m/s it turns from hover holds to forward
+// flight: heading hold gives way to balanced turns, drift hold to wings level.
+const CRUISE_FROM = 12
+const CRUISE_TO = 22
+// Hands off: m/s² of acceleration per m/s of speed error, up to MAX_HOLD_ACCEL, and the
+// steepest bank in radians the cyclic asks for in a hover
+const SPEED_GAIN = 0.3
+const MAX_HOLD_ACCEL = 2
+const HOVER_BANK = 0.3
+// Turn rate in rad/s per radian off the held heading, and per unit of sideslip
+const HEADING_GAIN = 2
+const SLIP_GAIN = 1.5
+// Attitude loops: rad/s of rate per radian of error, up to the most rate asked for; rate
+// loops: rad/s² per rad/s of error, up to the most the rotor and tail rotor can give
+const PITCH_GAIN = 2
+const ROLL_GAIN = 3
+const MAX_PITCH_RATE = 0.5
+const MAX_ROLL_RATE = 1
+const PITCH_RATE_GAIN = 5
+const ROLL_RATE_GAIN = 8
+const YAW_RATE_GAIN = 4
+const MAX_PITCH_ACCEL = 1.5
+const MAX_ROLL_ACCEL = 4
+const MAX_YAW_ACCEL = 2
+// Below NEAR_GROUND metres of wheel height the nose goes no lower than NEAR_GROUND_PITCH
+// radians, reaching full travel at that height
+const NEAR_GROUND = 10
+const NEAR_GROUND_PITCH = 0.03
+// On the wheels a full cyclic asks for this rate in rad/s
+const GROUND_RATE = 0.3
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+/** Smallest signed angle from `from` to `to` in radians, positive clockwise. */
+const turnAngle = (from: number, to: number) => Math.atan2(Math.sin(to - from), Math.cos(to - from))
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t
 const sigmoid = (x: number) => 1 / (1 + Math.exp(-x))
 /**
@@ -229,8 +280,11 @@ export class FlightSim {
   stallWarning = false
   /** True while a jet's afterburner is lit. */
   afterburner = false
-  /** Average engine speed in the units of the power gauge: rpm, or percent for a jet. */
+  /** Average engine speed in the units of the power gauge: rpm, percent for a jet, or torque. */
   rpm = 0
+  /** Helicopters: main rotor speed as a share of 100%, and its blade angle in radians. */
+  rotorSpeed = 0
+  rotorAngle = 0
 
   /** Distance of each engine from the centreline, negative on the left. */
   private arms: number[] = []
@@ -286,6 +340,11 @@ export class FlightSim {
   get mass() {
     return this.spec.mass + this.fuel - this.spec.fuelCapacity * LANDING_FUEL
   }
+  /** Helicopters: downwash through the rotor in m/s, and the heading the stability system holds. */
+  private inflow = 0
+  private heldHeading = 0
+  /** Helicopters: share of the running engines' power the rotor governor asks for. */
+  private rotorDemand = 0
   /** Fly-by-wire trim memorised above the flare height, held for the flare. Null after takeoff. */
   private flareTrim: number | null = null
   private readonly ground: Ground
@@ -318,6 +377,7 @@ export class FlightSim {
     for (const engine of this.engines) Object.assign(engine, { running: false, power: 0, rpm: 0 })
     this.enginesRunning = 0
     this.enginePower = 0
+    this.rotorSpeed = 0
     this.position.set(x, this.ground.heightAt(x, z) + this.spec.restHeight, z)
     this.sitOnTailWheel()
     this.fuel = this.spec.fuelCapacity * DEPARTURE_FUEL
@@ -356,6 +416,7 @@ export class FlightSim {
     this.gearPosition = this.spec.retractableGear ? 0 : 1
     for (const engine of this.engines) engine.power = 0.6
     this.enginePower = 0.6
+    if (this.spec.rotor) this.rotorSpeed = 1
     this.refreshAttitude()
     this.refreshAir()
   }
@@ -367,6 +428,7 @@ export class FlightSim {
    */
   settleOnPath(glide: number, flapNotch: number, gearDown: boolean, wind: Vector3) {
     const A = this.spec
+    if (A.rotor) return this.settleRotor(glide, A.rotor, wind)
     const notches = A.flapLabels.length - 1
     this.flapPosition = notches > 0 ? Math.min(flapNotch, notches) / notches : 0
     this.gearPosition = gearDown || !A.retractableGear ? 1 : 0
@@ -390,6 +452,55 @@ export class FlightSim {
     // Fly-by-wire trims itself, so only cable-controlled aircraft need the trim wheel set
     const trim = A.flyByWire ? 0 : -(A.cm0 + A.cmAlpha * Math.sin(alpha)) / A.cmTrim
     return { throttle, trim: clamp(trim, -1, 1) }
+  }
+
+  /**
+   * A helicopter's version of `settleOnPath`: nose down against the drag, the rotor's
+   * downwash settled, and the collective that holds the descent. The trim holds the speed.
+   */
+  private settleRotor(glide: number, rotor: RotorSpec, wind: Vector3) {
+    const speed = this.velocity.length()
+    const heading = this.heading
+    const density = airDensity(this.position.y)
+    const drag = 0.5 * density * speed * speed * rotor.drag.front
+    const weight = this.mass * GRAVITY
+    const pitch = -Math.atan(drag / weight)
+    this.rotorSpeed = 1
+    this.heldHeading = heading
+    this.velocity
+      .set(
+        Math.sin(heading) * Math.cos(glide) * speed,
+        -Math.sin(glide) * speed,
+        -Math.cos(heading) * Math.cos(glide) * speed
+      )
+      .add(wind)
+    this.orientation.setFromAxisAngle(UP, -heading).multiply(qStep.setFromAxisAngle(RIGHT, pitch))
+    this.angularVelocity.set(0, 0, 0)
+    this.refreshAttitude()
+    this.refreshAir()
+    // Air through the disc, and the downwash and blade pitch that carry the weight with it
+    vBody.copy(this.velocity).sub(wind).applyQuaternion(qInv.copy(this.orientation).invert())
+    const radius = rotor.radius
+    const rhoA = density * Math.PI * radius * radius
+    const tip = rotor.speed * radius
+    const across = Math.hypot(vBody.x, vBody.z)
+    const mu = across / tip
+    const thrust = Math.hypot(weight, drag)
+    let inflow = Math.sqrt(thrust / (2 * rhoA))
+    for (let i = 0; i < 50; i++) {
+      const flow = Math.max(Math.hypot(across, inflow + vBody.y), MIN_FLOW)
+      inflow += (thrust / (2 * rhoA * flow) - inflow) * 0.3
+    }
+    this.inflow = inflow
+    const lift = (rotor.blades * rotor.chord * rotor.liftSlope) / (2 * Math.PI * radius)
+    const lambda = (inflow + vBody.y) / tip
+    const ct = thrust / (rhoA * tip * tip)
+    const blade = ((ct / lift + lambda / 2) * 3) / (1 + 1.5 * mu * mu)
+    const [low, high] = rotor.collective
+    for (const engine of this.engines) engine.power = 0.5
+    this.enginePower = 0.5
+    const trim = -(speed / (rotor.trimSpeed * KNOT))
+    return { throttle: clamp((blade - low) / (high - low), 0, 1), trim: clamp(trim, -1, 0) }
   }
 
   /** Throttle, 0 to 1, that holds a steady descent `glide` radians down at the current airspeed. */
@@ -430,6 +541,7 @@ export class FlightSim {
         Math.hypot(speed, engine.staticThrustSpeed)
       return clamp(thrust / full, 0, 1)
     }
+    if (engine.type === 'turboshaft') return 0
     // An engine with no thrust at all, as on a glider, has no power to set
     const span = engine.militaryThrust - engine.idleThrust
     if (span <= 0) return 0
@@ -471,14 +583,63 @@ export class FlightSim {
     // Airflow relative to the aircraft, in body axes
     vBody.copy(this.velocity).sub(wind).applyQuaternion(qInv)
     const airspeed = vBody.length()
+    const density = airDensity(this.position.y)
+    const groundHeight = Math.max(this.ground.heightAt(this.position.x, this.position.z), 0)
+    const agl = this.position.y - groundHeight
+    this.mach = airspeed / speedOfSound(this.position.y)
+
+    force.set(0, 0, 0)
+    if (A.rotor) this.rotorForces(dt, controls, A.rotor, density, agl)
+    else this.wingForces(controls, airspeed, density, agl)
+
+    worldForce.copy(force).applyQuaternion(q)
+    this.applyGroundContact(controls, worldForce, torque)
+    if (this.crash) return
+
+    // Specific force (everything except gravity) drives the g meter and slip ball
+    const mass = this.mass
+    temp.copy(worldForce).applyQuaternion(qInv).divideScalar(mass)
+    this.gLoad = temp.y / GRAVITY
+    this.slip = Math.atan2(-temp.x, Math.max(temp.y, 0.2 * GRAVITY))
+
+    // Semi-implicit Euler integration
+    worldForce.y -= mass * GRAVITY
+    this.velocity.addScaledVector(worldForce, dt / mass)
+    this.position.addScaledVector(this.velocity, dt)
+
+    const w = this.angularVelocity
+    const spinX = A.inertiaPitch * w.x
+    const spinY = A.inertiaYaw * w.y
+    const spinZ = A.inertiaRoll * w.z
+    w.set(
+      w.x + ((torque.x - (w.y * spinZ - w.z * spinY)) / A.inertiaPitch) * dt,
+      w.y + ((torque.y - (w.z * spinX - w.x * spinZ)) / A.inertiaYaw) * dt,
+      w.z + ((torque.z - (w.x * spinY - w.y * spinX)) / A.inertiaRoll) * dt
+    )
+    qStep.set(w.x * 0.5 * dt, w.y * 0.5 * dt, w.z * 0.5 * dt, 0).premultiply(q)
+    q.set(q.x + qStep.x, q.y + qStep.y, q.z + qStep.z, q.w + qStep.w).normalize()
+
+    this.trueAirspeed = airspeed
+    this.indicatedAirspeed = airspeed * Math.sqrt(density / SEA_LEVEL_DENSITY)
+    this.altitudeAgl = agl
+    this.refreshAttitude()
+    // Strain builds while far past the never-exceed speed and eases once back below it
+    const over = this.indicatedAirspeed / A.neverExceedSpeed
+    this.overspeedStrain =
+      over > STRAIN_MARGIN ? this.overspeedStrain + dt : Math.max(0, this.overspeedStrain - dt)
+    if (over > BREAKUP_MARGIN || this.overspeedStrain > OVERSPEED_STRAIN) this.crash = 'overspeed'
+  }
+
+  /**
+   * Wing, tail, and engine forces of a fixed-wing aircraft, in body axes, into `force` and
+   * `torque`. Also refreshes the stall and engine speed readings.
+   */
+  private wingForces(controls: Controls, airspeed: number, density: number, agl: number) {
+    const A = this.spec
     const alpha = Math.atan2(-vBody.y, -vBody.z)
     const sinBeta = airspeed > 0.5 ? clamp(vBody.x / airspeed, -1, 1) : 0
     const beta = Math.asin(sinBeta)
-    const density = airDensity(this.position.y)
     const qS = 0.5 * density * airspeed * airspeed * A.wingArea
-    const groundHeight = Math.max(this.ground.heightAt(this.position.x, this.position.z), 0)
-    const agl = this.position.y - groundHeight
-
     // Lift and drag blend from attached flow to a flat plate as the wing stalls
     const flap = this.flapPosition
     const sinAlpha = Math.sin(alpha)
@@ -501,8 +662,7 @@ export class FlightSim {
     // Flying within one wingspan of the ground cuts induced drag
     const heightRatio = (16 * Math.max(agl, 0)) / A.wingSpan
     const groundEffect = (heightRatio * heightRatio) / (1 + heightRatio * heightRatio)
-    const mach = airspeed / speedOfSound(this.position.y)
-    this.mach = mach
+    const mach = this.mach
     const cd =
       A.cd0 +
       this.gearPosition * A.gearDrag * (this.gearJammed ? 1.6 : 1) +
@@ -622,35 +782,6 @@ export class FlightSim {
     // Rudder that would cancel the engines' uneven push, for the autopilot's yaw control
     this.balancingRudder = clamp(thrustYaw / Math.max(qS * A.wingSpan * A.cnRudder, 1), -1, 1)
 
-    worldForce.copy(force).applyQuaternion(q)
-    this.applyGroundContact(controls, worldForce, torque)
-    if (this.crash) return
-
-    // Specific force (everything except gravity) drives the g meter and slip ball
-    const mass = this.mass
-    temp.copy(worldForce).applyQuaternion(qInv).divideScalar(mass)
-    this.gLoad = temp.y / GRAVITY
-    this.slip = Math.atan2(-temp.x, Math.max(temp.y, 0.2 * GRAVITY))
-
-    // Semi-implicit Euler integration
-    worldForce.y -= mass * GRAVITY
-    this.velocity.addScaledVector(worldForce, dt / mass)
-    this.position.addScaledVector(this.velocity, dt)
-
-    const spinX = A.inertiaPitch * w.x
-    const spinY = A.inertiaYaw * w.y
-    const spinZ = A.inertiaRoll * w.z
-    w.set(
-      w.x + ((torque.x - (w.y * spinZ - w.z * spinY)) / A.inertiaPitch) * dt,
-      w.y + ((torque.y - (w.z * spinX - w.x * spinZ)) / A.inertiaYaw) * dt,
-      w.z + ((torque.z - (w.x * spinY - w.y * spinX)) / A.inertiaRoll) * dt
-    )
-    qStep.set(w.x * 0.5 * dt, w.y * 0.5 * dt, w.z * 0.5 * dt, 0).premultiply(q)
-    q.set(q.x + qStep.x, q.y + qStep.y, q.z + qStep.z, q.w + qStep.w).normalize()
-
-    this.trueAirspeed = airspeed
-    this.indicatedAirspeed = airspeed * Math.sqrt(density / SEA_LEVEL_DENSITY)
-    this.altitudeAgl = agl
     this.stall = separation
     this.stallWarning =
       !this.onGround && this.indicatedAirspeed > 10 && alpha > stallAlpha - A.stallWarningMargin
@@ -660,12 +791,178 @@ export class FlightSim {
       rpm += engine.rpm
     }
     this.rpm = rpm / this.engines.length
-    this.refreshAttitude()
-    // Strain builds while far past the never-exceed speed and eases once back below it
-    const over = this.indicatedAirspeed / A.neverExceedSpeed
-    this.overspeedStrain =
-      over > STRAIN_MARGIN ? this.overspeedStrain + dt : Math.max(0, this.overspeedStrain - dt)
-    if (over > BREAKUP_MARGIN || this.overspeedStrain > OVERSPEED_STRAIN) this.crash = 'overspeed'
+  }
+
+  /**
+   * Main rotor, tail rotor, and fuselage forces of a helicopter, in body axes, into `force`
+   * and `torque`. Blade element thrust with momentum inflow gives lift that grows with
+   * forward speed and near the ground, fades when sinking into the rotor's own downwash, and
+   * keeps the rotor turning in a glide with the engines out. The stability system turns the
+   * cyclic and pedals into attitude and turn rate targets.
+   */
+  private rotorForces(
+    dt: number,
+    controls: Controls,
+    rotor: RotorSpec,
+    density: number,
+    agl: number
+  ) {
+    const A = this.spec
+    const radius = rotor.radius
+    const area = Math.PI * radius * radius
+    const rhoA = density * area
+    const omega = this.rotorSpeed * rotor.speed
+    const tip = Math.max(omega * radius, 1)
+    const lift = (rotor.blades * rotor.chord * rotor.liftSlope) / (2 * Math.PI * radius)
+    const [low, high] = rotor.collective
+    const pitch = low + (high - low) * controls.throttle
+    // Air through the disc: climbing, or flying forward nose down, adds to it
+    const through = vBody.y
+    const across = Math.hypot(vBody.x, vBody.z)
+    const mu = across / tip
+    const lambda = (this.inflow + through) / tip
+    const ct = lift * ((pitch / 3) * (1 + 1.5 * mu * mu) - lambda / 2)
+    const thrust = Math.max(0, rhoA * tip * tip * ct)
+    // The downwash follows the thrust with a short lag
+    const flow = Math.max(Math.hypot(across, this.inflow + through), MIN_FLOW)
+    const settled = thrust / (2 * rhoA * flow)
+    this.inflow += (settled - this.inflow) * Math.min(1, dt / INFLOW_LAG)
+
+    // Close to the ground the downwash spreads out and the rotor lifts more, until the
+    // helicopter flies faster than its own downwash
+    const height = Math.max(agl + rotor.hub.y, radius / 2)
+    const fade = 1 / (1 + (across / HOVER_INFLOW) ** 2)
+    const cushion = Math.min(MAX_CUSHION, 1 / (1 - (radius / (4 * height)) ** 2 * fade))
+    force.y += thrust * cushion
+
+    // The fuselage drags against the air from every side
+    const { drag } = rotor
+    const half = 0.5 * density * vBody.length()
+    force.x -= half * vBody.x * drag.side
+    force.y -= half * vBody.y * drag.top
+    force.z -= half * vBody.z * drag.front
+
+    // Power the rotor takes: pushing air down, plus blade drag. Sinking through the disc
+    // gives power back, which is what turns the rotor in a glide with the engines out.
+    const profile =
+      (rhoA * tip ** 3 * lift * rotor.profileDrag * (1 + 4.65 * mu * mu)) / (4 * rotor.liftSlope)
+    const main = thrust * (INDUCED_LOSS * this.inflow + through) + profile
+    const needed = main + TAIL_SHARE * Math.max(main, 0) + ACCESSORY_POWER
+    const available =
+      A.engine.type === 'turboshaft' ? A.engine.shaftPower * this.turbineAir(density) : 0
+    let delivered = 0
+    for (const engine of this.engines) delivered += engine.power * available
+    // The rotor speeds up or slows on the difference. The freewheel clutch lets the rotor
+    // run faster than the engines, so they can never hold it back.
+    const energy = rotor.inertia * rotor.speed * rotor.speed
+    const share = Math.max(this.rotorSpeed, 0.05)
+    this.rotorSpeed = clamp(
+      this.rotorSpeed + ((delivered - needed) / (energy * share)) * dt,
+      0,
+      MAX_ROTOR_SPEED
+    )
+    this.rotorAngle = (this.rotorAngle + omega * dt) % (Math.PI * 2)
+    // The governor asks the engines for the power that holds 100%, and spins the rotor up
+    // gently after a start
+    const spinUp = clamp((1 - this.rotorSpeed) * 2, -1, SPIN_UP_RATE)
+    const wanted = needed + energy * share * spinUp
+    const running = this.engines.filter(engine => engine.running).length
+    this.rotorDemand = running > 0 ? clamp(wanted / (available * running), 0, 1) : 0
+    // The torque gauge reads each engine's output against its sea level rating
+    let torqueShare = 0
+    for (const engine of this.engines) {
+      engine.rpm = engine.power * this.turbineAir(density) * 100
+      torqueShare += engine.rpm
+    }
+    this.rpm = torqueShare / this.engines.length
+
+    this.stabilise(controls, rotor, Math.hypot(vBody.x, vBody.z), agl)
+    this.balancingRudder = 0
+    this.stall = 0
+    this.stallWarning = !this.onGround && this.rotorSpeed < LOW_ROTOR && this.position.y > 0
+  }
+
+  /**
+   * The stability system: the cyclic asks for a pitch and bank, and hands off it holds the
+   * trimmed ground speed and stops any drift in a hover. The pedals ask for a turn rate,
+   * and hands off they hold the heading in a hover or keep the turn balanced in forward
+   * flight. Control power falls with the rotor speed.
+   */
+  private stabilise(controls: Controls, rotor: RotorSpec, airspeed: number, agl: number) {
+    const A = this.spec
+    const w = this.angularVelocity
+    const authority = Math.min(1, this.rotorSpeed * this.rotorSpeed)
+    const forward =
+      Math.sin(this.heading) * this.velocity.x - Math.cos(this.heading) * this.velocity.z
+    const side = Math.cos(this.heading) * this.velocity.x + Math.sin(this.heading) * this.velocity.z
+    // Share of forward flight, where the helicopter banks to turn like an aeroplane. It
+    // counts over the ground, so a hover in a strong wind still holds its heading.
+    const cruising = smoothstep(CRUISE_FROM, CRUISE_TO, this.groundSpeed)
+
+    // The rotor leans into the drag of the air flowing past, as m/s² ahead and to the
+    // right, so the holds below work over the ground in any wind
+    const blow = (0.5 * airDensity(this.position.y) * Math.hypot(vBody.x, vBody.z)) / this.mass
+    const drag = -vBody.z * blow * rotor.drag.front
+    const sideDrag = vBody.x * blow * rotor.drag.side
+
+    // Hands off, lean back to slow toward the trimmed speed
+    const trimmed = Math.max(0, -controls.trim) * rotor.trimSpeed * KNOT
+    // Low down it never asks for more speed than it has, so letting go after a flare never
+    // pitches the nose down. It still stops a drift backward.
+    const low = agl - A.restHeight < NEAR_GROUND * 2
+    const target = low ? Math.min(trimmed, Math.max(forward, 0)) : trimmed
+    const speedUp = clamp((target - forward) * SPEED_GAIN, -MAX_HOLD_ACCEL, MAX_HOLD_ACCEL)
+    const holdPitch = clamp(-Math.atan((speedUp + drag) / GRAVITY), -rotor.maxPitch, rotor.maxPitch)
+    // Hands off in a hover, lean against any sideways drift
+    const slide = clamp(-side * SPEED_GAIN, -MAX_HOLD_ACCEL, MAX_HOLD_ACCEL)
+    const holdBank = Math.atan((slide + sideDrag) / GRAVITY) * (1 - cruising)
+    const bankReach = lerp(HOVER_BANK, rotor.maxBank, cruising)
+    // Hands off close to the ground, the nose stays about level so it clears the ground
+    const wheels = agl - A.restHeight
+    const lowest = lerp(-NEAR_GROUND_PITCH, -rotor.maxPitch, clamp(wheels / NEAR_GROUND, 0, 1))
+    // A held stick takes over from the speed hold. Sideways it adds to the drift hold, so in
+    // a hover a held stick settles on a steady sideways drift.
+    const pitchTarget = lerp(
+      Math.max(lowest, holdPitch),
+      controls.pitch * rotor.maxPitch,
+      Math.min(1, Math.abs(controls.pitch) * 3)
+    )
+    const bankTarget = clamp(holdBank + controls.roll * bankReach, -bankReach, bankReach)
+
+    // Turn rate to the right: the pedals' rate, or holding the heading in a hover and a
+    // balanced turn at speed
+    const steering = Math.abs(controls.yaw) > 0.02
+    if (steering || cruising > 0.5) this.heldHeading = this.heading
+    const hold = clamp(
+      turnAngle(this.heading, this.heldHeading) * HEADING_GAIN,
+      -rotor.maxYawRate,
+      rotor.maxYawRate
+    )
+    const balanced =
+      (GRAVITY * Math.tan(clamp(this.bank, -1, 1))) / Math.max(airspeed, CRUISE_FROM) +
+      (vBody.x / Math.max(airspeed, 1)) * SLIP_GAIN
+    const turnTarget = lerp(hold, balanced, cruising) + controls.yaw * rotor.maxYawRate
+
+    // On the wheels the system only damps: the cyclic and pedals turn the aircraft directly
+    let pitchRate = clamp((pitchTarget - this.pitch) * PITCH_GAIN, -MAX_PITCH_RATE, MAX_PITCH_RATE)
+    let rollRate = clamp((bankTarget - this.bank) * ROLL_GAIN, -MAX_ROLL_RATE, MAX_ROLL_RATE)
+    if (this.onGround) {
+      pitchRate = controls.pitch * GROUND_RATE
+      rollRate = controls.roll * GROUND_RATE
+    }
+    const pitchPush = clamp((pitchRate - w.x) * PITCH_RATE_GAIN, -MAX_PITCH_ACCEL, MAX_PITCH_ACCEL)
+    const rollPush = clamp((rollRate + w.z) * ROLL_RATE_GAIN, -MAX_ROLL_ACCEL, MAX_ROLL_ACCEL)
+    const turnPush = clamp((turnTarget + w.y) * YAW_RATE_GAIN, -MAX_YAW_ACCEL, MAX_YAW_ACCEL)
+    torque.set(
+      A.inertiaPitch * pitchPush * authority,
+      -A.inertiaYaw * turnPush * authority,
+      -A.inertiaRoll * rollPush * authority
+    )
+  }
+
+  /** Share of a turbine's sea level power the air allows. */
+  private turbineAir(density: number) {
+    return (density / SEA_LEVEL_DENSITY) ** 0.8
   }
 
   /** Thrust in newtons at a forward airspeed in m/s if every engine ran like `state`. */
@@ -678,7 +975,7 @@ export class FlightSim {
         Math.hypot(forwardSpeed, engine.staticThrustSpeed)
       )
     }
-    if (!state.running && state.power < 0.02) return 0
+    if (engine.type === 'turboshaft' || (!state.running && state.power < 0.02)) return 0
     const dry = lerp(
       engine.idleThrust,
       engine.militaryThrust,
@@ -704,6 +1001,7 @@ export class FlightSim {
       const idle = engine.speedLapse > 0 ? 20 : 62
       return idle + (100 - idle) * Math.min(1, state.power / engine.afterburnerFrom) ** 0.7
     }
+    if (engine.type === 'turboshaft') return state.power * 100
     if (!state.running) {
       return state.starting > 0 ? 150 + 150 * cranking : Math.min(900, 12 * forwardSpeed)
     }
@@ -728,6 +1026,9 @@ export class FlightSim {
     }
     this.ditched = false
     this.bellied = false
+    this.inflow = 0
+    this.heldHeading = heading
+    this.rotorDemand = 0
     this.gearStuck = false
     this.hydraulicsFailed = false
     this.fuelLeak = 0
@@ -824,7 +1125,9 @@ export class FlightSim {
         // Another engine took the starter, so this one spins down and starts over later
         engine.starting = 0
       }
-      const target = engine.running ? lerp(idle, 1, controls.throttle) : 0
+      // A helicopter's governor sets the power; the lever is the collective
+      const lever = A.rotor ? this.rotorDemand : lerp(idle, 1, controls.throttle)
+      const target = engine.running ? lever : 0
       engine.power += (target - engine.power) * spool
       power += engine.power
       if (!engine.running) continue
@@ -882,7 +1185,7 @@ export class FlightSim {
   /** One engine's share of its full fuel burn, 0 to 1. An afterburner uses six times full dry power. */
   private fuelDemand(power: number) {
     const engine = this.spec.engine
-    if (engine.type === 'piston' || engine.afterburnerFrom >= 1) return power
+    if (engine.type !== 'jet' || engine.afterburnerFrom >= 1) return power
     const dry = Math.min(1, power / engine.afterburnerFrom)
     return dry * 0.17 + this.reheat(power, engine.afterburnerFrom) * 0.83
   }

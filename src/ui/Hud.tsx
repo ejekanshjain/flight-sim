@@ -56,7 +56,8 @@ function Annunciators({ spec }: { spec: AircraftSpec }) {
         lamp =>
           (lamp.label !== 'AFTERBURNER' ||
             (spec.engine.type === 'jet' && spec.engine.afterburnerFrom < 1)) &&
-          (lamp.label !== 'GEAR SPEED' || spec.retractableGear)
+          (lamp.label !== 'GEAR SPEED' || spec.retractableGear) &&
+          !(spec.rotor && ROTORLESS_LAMPS.has(lamp.label))
       ),
     [spec]
   )
@@ -84,7 +85,7 @@ function Annunciators({ spec }: { spec: AircraftSpec }) {
           }}
           className={lamp.kind === 'warning' ? WARNING : NOTICE}
         >
-          {lamp.label}
+          {lamp.label === 'STALL' && spec.rotor ? 'LOW ROTOR' : lamp.label}
         </span>
       ))}
     </div>
@@ -98,6 +99,9 @@ type Lamp = {
   /** Whether the lamp belongs in the row at all, for failures only a mission brings. */
   present?: (sim: FlightSim) => boolean
 }
+
+/** Lamps for parts a helicopter does not have. Its stall lamp reads LOW ROTOR instead. */
+const ROTORLESS_LAMPS = new Set(['FLAP SPEED', 'GEAR SPEED', 'AIRBRAKE', 'REVERSE', 'GEAR UP'])
 
 const LAMPS: Lamp[] = [
   { label: 'STALL', kind: 'warning', on: sim => sim.stallWarning },
@@ -173,6 +177,7 @@ function Levers({ spec }: { spec: AircraftSpec }) {
   const flap = useRef<HTMLDivElement>(null)
   const flapLever = useRef<HTMLDivElement>(null)
   const trim = useRef<HTMLDivElement>(null)
+  const trimText = useRef<HTMLSpanElement>(null)
   useTelemetry(
     useCallback(
       (sim: FlightSim, controls: Controls) => {
@@ -182,7 +187,13 @@ function Levers({ spec }: { spec: AircraftSpec }) {
         if (flapLever.current) {
           flapLever.current.style.top = `${(controls.flapNotch / Math.max(1, spec.flapLabels.length - 1)) * 100}%`
         }
-        if (trim.current) trim.current.style.top = `${50 - controls.trim * 50}%`
+        // A helicopter's trim runs from a hover at the top to its fastest held speed
+        const trimmed = spec.rotor ? -controls.trim * 100 : 50 - controls.trim * 50
+        if (trim.current) trim.current.style.top = `${trimmed}%`
+        if (spec.rotor) {
+          const knots = Math.round(Math.max(0, -controls.trim) * spec.rotor.trimSpeed)
+          setText(trimText.current, knots < 1 ? 'Hover' : `${knots} kt`)
+        }
       },
       [spec]
     )
@@ -190,7 +201,7 @@ function Levers({ spec }: { spec: AircraftSpec }) {
   return (
     <div className="bg-bezel/30 ring-panel-edge/40 flex items-end gap-4 self-stretch rounded-md px-3 pt-2 pb-1.5 ring-1">
       <div className="flex flex-col items-center gap-1">
-        <span className={LEVER_LABEL}>Throttle</span>
+        <span className={LEVER_LABEL}>{spec.rotor ? 'Collective' : 'Throttle'}</span>
         <div className={`${TRACK} overflow-hidden`}>
           <div ref={throttle} className="bg-marking absolute inset-x-0 bottom-0" />
         </div>
@@ -220,18 +231,20 @@ function Levers({ spec }: { spec: AircraftSpec }) {
         </div>
       )}
       <div className="flex flex-col items-center gap-1">
-        <span className={LEVER_LABEL}>Trim</span>
+        <span className={LEVER_LABEL}>{spec.rotor ? 'Speed Hold' : 'Trim'}</span>
         <div className="flex gap-2">
           <div className={TRACK}>
-            <div className="bg-marking/60 absolute inset-x-0 top-1/2 h-px" />
+            {!spec.rotor && <div className="bg-marking/60 absolute inset-x-0 top-1/2 h-px" />}
             <div ref={trim} className={MARKER} />
           </div>
           <div className="text-marking/70 flex h-24 flex-col justify-between text-xs leading-none">
-            <span>Nose up</span>
-            <span>Nose down</span>
+            <span>{spec.rotor ? 'Hover' : 'Nose up'}</span>
+            <span>{spec.rotor ? `${spec.rotor.trimSpeed} kt` : 'Nose down'}</span>
           </div>
         </div>
-        <span className="text-xs">&nbsp;</span>
+        <span ref={trimText} className="text-marking text-xs tabular-nums">
+          &nbsp;
+        </span>
       </div>
     </div>
   )
@@ -247,6 +260,7 @@ function GearAndFuel({ spec }: { spec: AircraftSpec }) {
   const fuel = useRef<HTMLDivElement>(null)
   const fuelText = useRef<HTMLSpanElement>(null)
   const engineText = useRef<HTMLSpanElement>(null)
+  const rotorText = useRef<HTMLSpanElement>(null)
   useTelemetry(
     useCallback(
       (sim: FlightSim) => {
@@ -264,6 +278,8 @@ function GearAndFuel({ spec }: { spec: AircraftSpec }) {
               : 'Moving'
         setText(gearText.current, label)
         setText(engineText.current, `${sim.enginesRunning} of ${spec.engineCount}`)
+        setText(rotorText.current, `${Math.round(sim.rotorSpeed * 100)}%`)
+        if (rotorText.current) rotorText.current.dataset.low = String(sim.stallWarning)
         if (fuel.current) fuel.current.style.width = `${(sim.fuel / spec.fuelCapacity) * 100}%`
         setText(
           fuelText.current,
@@ -290,6 +306,15 @@ function GearAndFuel({ spec }: { spec: AircraftSpec }) {
         <span className={LEVER_LABEL}>Engines</span>
         <span ref={engineText} className="text-marking whitespace-nowrap tabular-nums" />
       </div>
+      {spec.rotor && (
+        <div className="flex justify-between text-xs">
+          <span className={LEVER_LABEL}>Rotor</span>
+          <span
+            ref={rotorText}
+            className="text-marking data-[low=true]:text-warn tabular-nums data-[low=true]:font-bold"
+          />
+        </div>
+      )}
       <div className="flex flex-col gap-1">
         <div className="flex justify-between text-xs">
           <span className={LEVER_LABEL}>Fuel</span>
@@ -434,6 +459,88 @@ type Step = {
   done?: (sim: FlightSim, controls: Controls) => boolean
 }
 
+/** Takeoff and landing steps for a helicopter: no runway, just up and down from a hover. */
+function rotorSteps(spec: AircraftSpec): { takeoff: Step[]; landing: Step[] } {
+  const takeoff: Step[] = [
+    {
+      text: (
+        <>
+          Press <Key>O</Key> for battery power, then <Key>U</Key> for the fuel pumps.
+        </>
+      ),
+      done: (_, controls) => controls.battery && controls.fuelPumps
+    },
+    {
+      text: (
+        <>
+          Press <Key>I</Key> to start both engines, and wait for the rotor to reach 100%.
+        </>
+      ),
+      done: sim => sim.rotorSpeed > 0.98
+    },
+    {
+      text: (
+        <>
+          Press <Key>P</Key> to release the parking brake.
+        </>
+      ),
+      done: (_, controls) => !controls.parkingBrake
+    },
+    {
+      text: (
+        <>
+          Hold <Key>W</Key> to lift off, then let go: the helicopter holds its hover.
+        </>
+      ),
+      done: sim => sim.altitudeAgl > spec.restHeight + 5
+    },
+    {
+      text: (
+        <>
+          Tilt with the arrows and turn on the spot with <Key>A</Key> and <Key>D</Key>. <Key>Q</Key>{' '}
+          holds a cruise speed hands off.
+        </>
+      ),
+      done: (_, controls) => controls.trim < -0.3
+    }
+  ]
+  const landing: Step[] = [
+    {
+      text: (
+        <>
+          Press <Key>E</Key> until the speed hold reads Hover, and let go of the arrows to slow
+          down.
+        </>
+      ),
+      done: (sim, controls) => controls.trim > -0.05 && sim.groundSpeed < 3
+    },
+    {
+      text: (
+        <>
+          Hold <Key>S</Key> to come down. The descent slows by itself near the ground.
+        </>
+      ),
+      done: sim => sim.onGround
+    },
+    {
+      text: (
+        <>
+          Keep holding <Key>S</Key> to lower the collective fully.
+        </>
+      ),
+      done: (sim, controls) => sim.onGround && controls.throttle < 0.1
+    },
+    {
+      text: (
+        <>
+          Set the parking brake with <Key>P</Key>, and stop the engines with <Key>I</Key>.
+        </>
+      )
+    }
+  ]
+  return { takeoff, landing }
+}
+
 /** True when the aircraft is on a runway and pointing along it, either way. */
 function linedUp(sim: FlightSim) {
   for (const runway of AIRPORTS.flatMap(airport => airport.runways)) {
@@ -565,6 +672,7 @@ function switches(sim: FlightSim, controls: Controls) {
 /** Takeoff steps before the first flight, landing steps when low and slowing down or back on the ground. */
 function Checklists({ spec }: { spec: AircraftSpec }) {
   const { takeoff, landing } = useMemo(() => {
+    if (spec.rotor) return rotorSteps(spec)
     const airliner = spec.shape.type === 'airliner'
     // Concorde's lever droops the nose instead of lowering flaps
     const nose = spec.flapName === 'Nose'
@@ -762,10 +870,15 @@ function Checklists({ spec }: { spec: AircraftSpec }) {
   }, [spec])
 
   const beforeFlight = useCallback((sim: FlightSim) => parked(sim) && !game.hasFlown, [])
-  const arriving = useCallback((sim: FlightSim, controls: Controls) => {
-    if (parked(sim)) return game.hasFlown
-    return sim.altitudeAgl < 500 && controls.throttle < 0.6
-  }, [])
+  const arriving = useCallback(
+    (sim: FlightSim, controls: Controls) => {
+      if (parked(sim)) return game.hasFlown
+      // A helicopter is landing once it slows low down; its collective says nothing
+      if (spec.rotor) return game.hasFlown && sim.altitudeAgl < 60 && sim.groundSpeed < 15
+      return sim.altitudeAgl < 500 && controls.throttle < 0.6
+    },
+    [spec]
+  )
   return (
     <>
       <Checklist title="Takeoff Steps" steps={takeoff} shown={beforeFlight} />

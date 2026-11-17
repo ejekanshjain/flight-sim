@@ -4,11 +4,15 @@ import { type Advice, landingAdvice } from '../game/coach'
 import { combatAdvice } from '../game/combat'
 import { game, useGame } from '../game/game'
 import {
+  HOIST_HIGH,
+  HOIST_LOW,
+  HOIST_REACH,
   MISSION_CATEGORIES,
   MISSIONS,
   type Mission,
   type MissionCategory,
-  passedMissions
+  passedMissions,
+  type Rescue
 } from '../game/missions'
 import { HANGAR } from '../sim/aircraft'
 import type { FlightSim } from '../sim/flight-sim'
@@ -29,7 +33,8 @@ const CATEGORY_TITLES: Record<MissionCategory, string> = {
   Challenge: 'Challenges',
   Bombing: 'Bombing Range',
   Strike: 'Air Strike',
-  'Air Combat': 'Air Combat'
+  'Air Combat': 'Air Combat',
+  Helicopter: 'Helicopter'
 }
 
 const CATEGORY_NOTES: Record<MissionCategory, string> = {
@@ -39,7 +44,8 @@ const CATEGORY_NOTES: Record<MissionCategory, string> = {
   Challenge: 'Harder flying when things go wrong.',
   Bombing: 'The B-2 on the Gull Point practice range.',
   Strike: 'Fighters with guided missiles on the same range.',
-  'Air Combat': 'Heat-seekers and flares against enemy aircraft that fight back.'
+  'Air Combat': 'Heat-seekers and flares against enemy aircraft that fight back.',
+  Helicopter: 'The Black Hawk: hovering, rooftop pads, and rescues at sea.'
 }
 
 /** Mission text with keys in square brackets drawn as key caps. */
@@ -261,6 +267,7 @@ export function MissionCard({ mission }: { mission: Mission }) {
       {mission.bombs !== undefined && (
         <BombPanel total={mission.bombs} demolish={mission.demolish} />
       )}
+      {mission.rescue && <RescuePanel rescue={mission.rescue} />}
       {alert && (
         <p
           role="alert"
@@ -270,6 +277,44 @@ export function MissionCard({ mission }: { mission: Mission }) {
           <span className="text-warn tabular-nums">Mission fails in {alert.left} s</span>
         </p>
       )}
+    </div>
+  )
+}
+
+const FEET_PER_METRE = 3.281
+
+/**
+ * Survivors aboard, the winch's progress on the next one, and what keeps the winch from
+ * running: too far from the boat, too high or low, or drifting.
+ */
+function RescuePanel({ rescue }: { rescue: Rescue }) {
+  const count = useRef<HTMLSpanElement>(null)
+  const hint = useRef<HTMLSpanElement>(null)
+  useTelemetry(
+    useCallback(
+      (sim: FlightSim) => {
+        const { aboard, hoist } = game.missions
+        const winching = hoist > 0 ? ` · Winching ${Math.round(hoist * 100)}%` : ''
+        setText(count.current, `Aboard ${aboard} of ${rescue.survivors}${winching}`)
+        const away = Math.hypot(sim.position.x - rescue.x, sim.position.z - rescue.z)
+        const wheels = sim.position.y - sim.spec.restHeight
+        let text = ''
+        if (aboard >= rescue.survivors || away > 400) text = ''
+        else if (away > HOIST_REACH) text = `Boat ${Math.round(away)} m away. Hover right over it.`
+        else if (wheels > HOIST_HIGH) {
+          text = `Too high for the winch: come down below ${Math.round(HOIST_HIGH * FEET_PER_METRE)} ft.`
+        } else if (wheels < HOIST_LOW) {
+          text = `Too low: climb above ${Math.round(HOIST_LOW * FEET_PER_METRE)} ft.`
+        } else if (sim.groundSpeed > 3) text = 'Drifting: let go of the keys to steady the hover.'
+        setText(hint.current, text)
+      },
+      [rescue]
+    )
+  )
+  return (
+    <div className="border-ink/25 mt-2 border-t pt-2">
+      <span ref={count} className="font-bold tabular-nums" />
+      <span ref={hint} className="mt-1 block leading-snug empty:hidden" />
     </div>
   )
 }

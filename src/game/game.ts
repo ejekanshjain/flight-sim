@@ -7,6 +7,7 @@ import {
   AIRPORTS,
   type Airport,
   fromStrip,
+  HELIPADS,
   heightAt,
   ISLAND_GROUND,
   outside
@@ -111,6 +112,8 @@ const SIGHT_LINGER = 2.5
 const spot = new Vector3()
 // Longest physics step in seconds. Longer frames are split into several steps.
 const MAX_STEP = 1 / 120
+// Seconds between puffs of a rescue boat's distress smoke
+const DISTRESS_GAP = 0.25
 // Seconds the crash plays before the menu appears
 const CRASH_REPLAY = 3
 // Seconds a won bombing mission flies on, so the last explosion shows before the menu
@@ -134,6 +137,9 @@ function engineSpots(spec: AircraftSpec) {
     const right = [...shape.engines].sort((a, b) => a[0] - b[0])
     const back = (x: number, z: number) => new Vector3(x, shape.engineY, z + shape.engineLength)
     spots = [...right.map(([x, z]) => back(-x, z)).reverse(), ...right.map(([x, z]) => back(x, z))]
+  } else if (shape.type === 'helicopter') {
+    // The exhausts behind the two engines on the roof
+    spots = [new Vector3(-1.17, 1.2, 1.75), new Vector3(1.17, 1.2, 1.75)]
   }
   spotsBySpec.set(spec, spots)
   return spots
@@ -170,6 +176,8 @@ class Game {
   private sprayClock = 0
   // Enter held down in the bombsight, and seconds until the next bomb of the string
   private rippleHeld = false
+  /** Seconds until the next puff of a rescue boat's distress smoke. */
+  private distressTimer = 0
   private rippleClock = 0
 
   // Settings come back as the player left them
@@ -540,6 +548,7 @@ class Game {
         }
         this.burnTargets(dt)
         this.checkMission(dt)
+        this.signalDistress(dt)
       }
     } else if (status === 'crashed') {
       this.wreck.step(dt, ISLAND_GROUND, this.effects)
@@ -644,6 +653,16 @@ class Game {
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
     }
+  }
+
+  /** Orange smoke rises from a rescue mission's boat until its last survivor is aboard. */
+  private signalDistress(dt: number) {
+    const rescue = this.state.mission?.rescue
+    if (!rescue || this.missions.aboard >= rescue.survivors) return
+    this.distressTimer -= dt
+    if (this.distressTimer > 0) return
+    this.distressTimer = DISTRESS_GAP
+    this.effects.distressSmoke(spot.set(rescue.x, 1.5, rescue.z))
   }
 
   /** Advances the mission's objectives, and ends the flight once it passes or fails. */
@@ -865,9 +884,14 @@ class Game {
   private placeAtStand() {
     const spec = this.changeAircraft()
     const airport = this.state.departure
-    // Airliners park at the terminal; everything else parks in front of the hangars
+    // Airliners park at the terminal, helicopters on the helipad, and everything else in
+    // front of the hangars
     const stands = spec.shape.type === 'airliner' ? airport.gates : airport.ramps
-    const stand = stands[Math.floor(stands.length / 2)]
+    const pad = HELIPADS.find(candidate => candidate.airport === airport.code)
+    const stand =
+      spec.rotor && pad
+        ? { x: pad.x, z: pad.z, heading: (pad.heading * Math.PI) / 180 }
+        : stands[Math.floor(stands.length / 2)]
     this.sim.placeOnGround(stand.x, stand.z, stand.heading)
     // At the stand everything starts cold and dark
     this.pilot.resetForGround(this.sim, true)

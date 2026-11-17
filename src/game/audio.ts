@@ -89,8 +89,18 @@ export class Sound {
     // The fastest engine sets the pitch, so one running engine is heard among stopped ones
     let rpm = 0
     for (const state of sim.engines) rpm = Math.max(rpm, state.rpm)
-    const turning = flying && (jet ? rpm > 15 : rpm > 50)
-    if (jet) {
+    const { rotor } = sim.spec
+    const turning = flying && (rotor ? sim.rotorSpeed > 0.05 : jet ? rpm > 15 : rpm > 50)
+    if (rotor) {
+      // Each blade slaps the air once a turn, about 17 times a second at full rotor speed
+      const slap = Math.max(1, (sim.rotorSpeed * rotor.speed * rotor.blades) / (Math.PI * 2))
+      engine.type = 'sawtooth'
+      engine.frequency.setTargetAtTime(slap, now, 0.05)
+      engineSub.frequency.setTargetAtTime(slap / 2, now, 0.05)
+      engineFilter.frequency.setTargetAtTime(200 + 250 * sim.rotorSpeed, now, 0.05)
+      const thump = Math.min(1, sim.rotorSpeed) * (0.05 + 0.08 * sim.enginePower)
+      engineGain?.gain.setTargetAtTime(turning ? thump : 0, now, 0.1)
+    } else if (jet) {
       // A turbine whines far above the low rumble of its exhaust
       engine.type = 'sine'
       engine.frequency.setTargetAtTime(700 + rpm * 24, now, 0.1)

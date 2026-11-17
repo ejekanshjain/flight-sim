@@ -3,7 +3,14 @@ import { Quaternion, Vector3 } from 'three'
 import { HANGAR, KNOT } from '../sim/aircraft'
 import { FlightSim } from '../sim/flight-sim'
 import { APPROACHES, onCentreline, pathAltitude } from '../world/approaches'
-import { AIRPORTS, fromStrip, heightAt, ISLAND_GROUND, RANGE } from '../world/island'
+import {
+  AIRPORTS,
+  fromStrip,
+  heightAt,
+  helipad as helipadOf,
+  ISLAND_GROUND,
+  RANGE
+} from '../world/island'
 import { Bombs, bombAdvice } from './bombs'
 import { landingAdvice } from './coach'
 import { AirCombat } from './combat'
@@ -937,4 +944,108 @@ test('a crew on the autopilot who adds full power at the WINDSHEAR call passes S
   expect(warned).toBe(true)
   expect(sim.crash).toBeNull()
   expect(result).toMatchObject({ passed: true })
+})
+
+/**
+ * Starts a helicopter mission the way the game does, or in a hover over (`x`, `z`) with the
+ * wheels `above` metres up, and flies it with real key presses from `fly`.
+ */
+function helicopterMission(id: string, hover?: { x: number; z: number; above: number }) {
+  const mission = MISSIONS.find(candidate => candidate.id === id)
+  const spec = HANGAR.find(candidate => candidate.id === 'uh60')
+  if (!mission || !spec || mission.start.kind !== 'air') throw new Error('Missing mission')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  const { start } = mission
+  if (hover) {
+    const ground = Math.max(ISLAND_GROUND.heightAt(hover.x, hover.z), 0)
+    sim.placeInAir(hover.x, ground + spec.restHeight + hover.above, hover.z, 0, 0.01)
+  } else {
+    sim.placeInAir(start.x, start.altitude, start.z, start.heading * DEGREE, start.speed * KNOT)
+  }
+  const pilot = new Pilot()
+  pilot.resetForAir(spec, sim)
+  Object.assign(pilot.controls, sim.settleOnPath(0, 0, true, CALM))
+  const nav = new Navigator()
+  const runner = new MissionRunner()
+  runner.start(mission, sim)
+  const hold = (code: string, down: boolean) =>
+    down ? pilot.press(code, true, sim) : pilot.release(code)
+  /** Flies until the mission ends, `seconds` pass, or `until` holds. */
+  const fly = (seconds: number, each?: () => void, until?: () => boolean) => {
+    let result = null
+    for (let time = 0; time < seconds && !result && !sim.crash && !until?.(); time += STEP) {
+      each?.()
+      pilot.update(STEP, sim)
+      sim.step(STEP, pilot.controls, CALM)
+      result = runner.update(STEP, { sim, controls: pilot.controls, pilot, nav, parkedAt: null })
+    }
+    return result
+  }
+  return { mission, sim, pilot, runner, hold, fly }
+}
+
+test('the rescue boat sits on open sea, and the helicopter mission starts are clear of the ground', () => {
+  const rescue = MISSIONS.find(candidate => candidate.id === 'sea-rescue')?.rescue
+  if (!rescue) throw new Error('Missing rescue')
+  for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+    const x = rescue.x + Math.cos(angle) * 60
+    const z = rescue.z + Math.sin(angle) * 60
+    expect(ISLAND_GROUND.heightAt(x, z)).toBeLessThan(-5)
+  }
+  for (const id of ['rooftop-landing', 'sea-rescue', 'autorotation']) {
+    const { start } = MISSIONS.find(candidate => candidate.id === id) ?? {}
+    if (start?.kind !== 'air') throw new Error(`Missing ${id}`)
+    expect(start.altitude - Math.max(ISLAND_GROUND.heightAt(start.x, start.z), 0)).toBeGreaterThan(
+      100
+    )
+  }
+})
+
+test('a steady hover over the boat winches all three sailors up, then the roof pad lands them', () => {
+  const rescue = MISSIONS.find(candidate => candidate.id === 'sea-rescue')?.rescue
+  if (!rescue) throw new Error('Missing rescue')
+  const out = helicopterMission('sea-rescue', { x: rescue.x, z: rescue.z, above: 15 })
+  out.fly(45, undefined, () => out.runner.aboard >= 3)
+  expect(out.sim.crash).toBeNull()
+  expect(out.runner.aboard).toBe(3)
+  expect(out.runner.step).toBe(3)
+  // Fly home in a moment: lift the helicopter to a hover over the hospital roof
+  const pad = helipadOf('hospital')
+  out.sim.placeInAir(pad.x, pad.elevation + 1.9 + 20, pad.z, 0, 0.01)
+  Object.assign(out.pilot.controls, out.sim.settleOnPath(0, 0, true, CALM))
+  const result = out.fly(60, () => out.hold('KeyS', true))
+  expect(out.sim.crash).toBeNull()
+  expect(result).toEqual({ passed: true, touchdown: expect.any(Number) })
+})
+
+test('a pilot who drops the collective, glides, flares, and cushions survives the engine failure', () => {
+  const { sim, pilot, hold, fly } = helicopterMission('autorotation')
+  let phase = 'cruise'
+  const result = fly(300, () => {
+    const wheels = sim.altitudeAgl - sim.spec.restHeight
+    if (phase === 'cruise' && !sim.engineRunning) phase = 'lower'
+    if (phase === 'lower') {
+      hold('KeyS', pilot.controls.throttle > 0.02)
+      if (pilot.controls.throttle <= 0.02) phase = 'glide'
+    }
+    if (phase === 'glide' && wheels < 30) phase = 'flare'
+    if (phase === 'flare') {
+      hold('ArrowDown', wheels > 8)
+      if (wheels <= 8) phase = 'cushion'
+    }
+    // Raise the collective only in the last few metres, so the stored spin lasts to the
+    // ground, and ease it off again if the helicopter starts to climb
+    if (phase === 'cushion') {
+      hold('KeyW', !sim.onGround && wheels < 4 && sim.verticalSpeed < -1)
+      hold('KeyS', !sim.onGround && sim.verticalSpeed > 0)
+      if (sim.onGround) phase = 'stop'
+    }
+    if (phase === 'stop') {
+      hold('KeyW', false)
+      hold('KeyS', true)
+      hold('Space', true)
+    }
+  })
+  expect(sim.crash).toBeNull()
+  expect(result).toEqual({ passed: true, touchdown: expect.any(Number) })
 })

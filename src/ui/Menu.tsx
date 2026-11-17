@@ -37,6 +37,16 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
     ]
   },
   {
+    title: 'Helicopter',
+    rows: [
+      [['W', 'S'], 'Climb, descend. Let go and it holds the height'],
+      [['↑', '↓'], 'Tilt forward to fly ahead, back to slow down'],
+      [['←', '→'], 'Slide sideways in a hover, bank to turn at speed'],
+      [['A', 'D'], 'Turn on the spot'],
+      [['Q', 'E'], 'Speed held hands off: faster, slower, down to a hover']
+    ]
+  },
+  {
     title: 'Autopilot',
     rows: [
       [['Z'], 'Autopilot on: holds heading and altitude'],
@@ -271,6 +281,51 @@ function Silhouette({ spec }: { spec: AircraftSpec }) {
         [0.7, 7.1]
       ])
     )
+  } else if (shape.type === 'helicopter') {
+    const { rotor } = spec
+    nose = -7.6
+    tail = rotor ? rotor.tailHub.z + rotor.tailRadius : 10
+    // Cabin and tail boom, the stabilator, then the four main blades crossed over the cabin
+    parts.push(
+      [
+        [0, nose],
+        [0.8, -7.1],
+        [1.15, -6.2],
+        [1.18, 1.8],
+        [0.6, 4.5],
+        [0.3, 10],
+        [-0.3, 10],
+        [-0.6, 4.5],
+        [-1.18, 1.8],
+        [-1.15, -6.2],
+        [-0.8, -7.1]
+      ],
+      [
+        [-2.19, 9.1],
+        [2.19, 9.1],
+        [2.19, 9.9],
+        [-2.19, 9.9]
+      ]
+    )
+    if (rotor) {
+      const { x, z } = rotor.tailHub
+      parts.push([
+        [x, z - rotor.tailRadius],
+        [x + 0.25, z - rotor.tailRadius],
+        [x + 0.25, z + rotor.tailRadius],
+        [x, z + rotor.tailRadius]
+      ])
+      for (let i = 0; i < rotor.blades; i++) {
+        const angle = Math.PI / 4 + (i * Math.PI * 2) / rotor.blades
+        const [cos, sin] = [Math.cos(angle), Math.sin(angle)]
+        // `r` metres out along the blade, `w` metres across it
+        const at = (r: number, w: number): [number, number] => [
+          rotor.hub.x + cos * r - sin * w,
+          rotor.hub.z + sin * r + cos * w
+        ]
+        parts.push([at(0, -0.35), at(rotor.radius, -0.35), at(rotor.radius, 0.35), at(0, 0.35)])
+      }
+    }
   } else {
     nose = shape.noseZ
     tail = shape.tailZ
@@ -370,7 +425,7 @@ export function Menu() {
   let summary = CRASH_REASONS[crash ?? 'terrain']
   if (status === 'menu') {
     summary =
-      'Eleven real aircraft, from a Cessna to the Space Shuttle, nine islands, and twelve airports. Fly free, or take on a mission.'
+      'Twelve real aircraft, from a Cessna to the Space Shuttle and a Black Hawk helicopter, nine islands, and twelve airports. Fly free, or take on a mission.'
   } else if (status === 'paused') {
     summary = 'The aircraft holds its position until you resume.'
   } else if (status === 'finished' && result) {
@@ -441,8 +496,12 @@ export function Menu() {
                             [
                               ['Power', selected.stats.power],
                               ['Top speed', `${selected.stats.topSpeed} kt`],
-                              ['Stall', `${selected.stats.stallSpeed} kt`],
-                              ['Wingspan', `${Math.round(selected.wingSpan)} m`]
+                              selected.rotor
+                                ? ['Climb', `${selected.stats.climb.toLocaleString('en')} ft/min`]
+                                : ['Stall', `${selected.stats.stallSpeed} kt`],
+                              selected.rotor
+                                ? ['Rotor', `${Math.round(selected.rotor.radius * 2)} m`]
+                                : ['Wingspan', `${Math.round(selected.wingSpan)} m`]
                             ] as const
                           ).map(([label, value]) => (
                             <div key={label}>
@@ -499,7 +558,9 @@ export function Menu() {
                       <Action primary={choosing} onClick={game.startAtStand}>
                         {selected.shape.type === 'airliner'
                           ? 'Start at the Gate'
-                          : 'Start at the Hangar'}
+                          : selected.rotor
+                            ? 'Start at the Helipad'
+                            : 'Start at the Hangar'}
                       </Action>
                       <div className="grid grid-cols-2 gap-2">
                         <Action onClick={game.startOnRunway}>On the Runway</Action>

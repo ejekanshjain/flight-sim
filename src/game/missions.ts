@@ -5,7 +5,9 @@ import {
   type Airport,
   CITIES,
   fromStrip,
+  type HelipadId,
   heightAt,
+  helipad,
   isPaved,
   outside,
   RANGE
@@ -31,6 +33,7 @@ export type MissionCategory =
   | 'Bombing'
   | 'Strike'
   | 'Air Combat'
+  | 'Helicopter'
 export const MISSION_CATEGORIES: MissionCategory[] = [
   'Tutorial',
   'Speed Run',
@@ -38,7 +41,8 @@ export const MISSION_CATEGORIES: MissionCategory[] = [
   'Challenge',
   'Bombing',
   'Strike',
-  'Air Combat'
+  'Air Combat',
+  'Helicopter'
 ]
 
 /** A ring to fly through, in order. Heading is in radians. */
@@ -64,6 +68,8 @@ export type MissionContext = {
   bombsight?: boolean
   /** Enemy aircraft, missiles, and flares, on air combat missions. */
   combat?: AirCombat
+  /** Survivors winched aboard so far, on rescue missions. */
+  aboard: number
 }
 
 /**
@@ -155,6 +161,32 @@ export type Mission = {
   script?: (context: MissionContext) => void
   /** A microburst that blows for the whole mission, in any weather. */
   microburst?: Microburst
+  /** A boat in distress at sea, its survivors to winch up one by one from a steady hover. */
+  rescue?: Rescue
+}
+
+/** A boat in distress. x and z in metres; the survivors come up one at a time. */
+export type Rescue = { x: number; z: number; survivors: number }
+
+// Winching: seconds per survivor, and the hover that allows it: within HOIST_REACH metres of
+// the boat sideways, wheels between HOIST_LOW and HOIST_HIGH metres above the sea, and
+// drifting slower than HOIST_DRIFT m/s
+const HOIST_SECONDS = 12
+export const HOIST_REACH = 15
+export const HOIST_LOW = 6
+export const HOIST_HIGH = 30
+const HOIST_DRIFT = 3
+
+/** True while the helicopter hovers where the winch reaches the boat. */
+export function overBoat(sim: FlightSim, rescue: Rescue) {
+  const wheels = sim.position.y - sim.spec.restHeight
+  return (
+    !sim.onGround &&
+    Math.hypot(sim.position.x - rescue.x, sim.position.z - rescue.z) < HOIST_REACH &&
+    wheels > HOIST_LOW &&
+    wheels < HOIST_HIGH &&
+    sim.groundSpeed < HOIST_DRIFT
+  )
 }
 
 const FEET = 0.3048
@@ -252,6 +284,42 @@ const offRunway = {
   reason: 'The aircraft touched down off the runway.',
   failed: (context: MissionContext) => context.touchdown !== null && !context.touchdown.paved
 }
+
+/** A touchdown on a pad or field harder than `limit` m/s fails a helicopter mission. */
+const hardHover = (limit: number, hint: string) => ({
+  reason: (context: MissionContext) =>
+    `The touchdown was too hard at ${fpm(context.touchdown?.rate ?? 0)} ft/min. Keep it under ${fpm(limit)} ft/min: ${hint}`,
+  failed: (context: MissionContext) => (context.touchdown?.rate ?? 0) > limit
+})
+
+/** Metres from a helipad's centre, sideways. */
+const fromPad = (id: HelipadId, context: MissionContext) => {
+  const pad = helipad(id)
+  return Math.hypot(context.sim.position.x - pad.x, context.sim.position.z - pad.z)
+}
+
+/** True when resting on the wheels on a helipad. */
+const onPad = (id: HelipadId) => (context: MissionContext) =>
+  context.sim.onGround && fromPad(id, context) < helipad(id).radius
+
+/** True in a steady hover over a helipad, wheels up to 100 ft above it. */
+const overPad = (id: HelipadId) => (context: MissionContext) => {
+  const { sim } = context
+  const wheels = sim.position.y - sim.spec.restHeight - helipad(id).elevation
+  return (
+    !sim.onGround &&
+    fromPad(id, context) < helipad(id).radius &&
+    wheels < 100 * FEET &&
+    sim.groundSpeed < 2
+  )
+}
+
+/** Down anywhere but on this helipad. */
+const offPad = (id: HelipadId) => ({
+  reason: `The helicopter set down off the ${helipad(id).name} pad. Land inside the painted square.`,
+  failed: (context: MissionContext) =>
+    context.time > 5 && context.sim.onGround && !onPad(id)(context)
+})
 
 const steepBank = (context: MissionContext) => Math.abs(context.sim.bank) > 40 * DEGREES
 
@@ -485,6 +553,36 @@ const throughBurst = (context: MissionContext) => {
   const along = (x - STORM_BURST.x) * Math.sin(course) - (z - STORM_BURST.z) * Math.cos(course)
   return along > STORM_BURST.radius * 1.4 || context.sim.onGround
 }
+
+// Helicopter missions. The hospital roof faces the sea, with the rescue ship anchored
+// offshore; the swamped boat drifts further out on the same line.
+const HOSPITAL_PAD = helipad('hospital')
+const SHIP_PAD = helipad('ship')
+const SEAWARD = (() => {
+  const x = SHIP_PAD.x - HOSPITAL_PAD.x
+  const z = SHIP_PAD.z - HOSPITAL_PAD.z
+  const length = Math.hypot(x, z)
+  return { x: x / length, z: z / length }
+})()
+/** A point `distance` metres out to sea from the hospital, and the heading back to it. */
+const seaward = (distance: number) => ({
+  x: Math.round(HOSPITAL_PAD.x + SEAWARD.x * distance),
+  z: Math.round(HOSPITAL_PAD.z + SEAWARD.z * distance),
+  inbound: Math.round(Math.atan2(-SEAWARD.x, SEAWARD.z) / DEGREES + 360) % 360
+})
+const ROOFTOP_START = seaward(3000)
+const RESCUE_BOAT = (() => {
+  const { x, z } = seaward(
+    Math.hypot(SHIP_PAD.x - HOSPITAL_PAD.x, SHIP_PAD.z - HOSPITAL_PAD.z) + 4000
+  )
+  return { x, z, survivors: 3 }
+})()
+const RESCUE_START = seaward(500)
+// Engine failure: on the extended centreline of Coral Bay's main runway, both engines
+// quitting this many seconds in
+const AUTOROTATION_RUNWAY = airport('CBI').runways[0]
+const AUTOROTATION_START = fromStrip(AUTOROTATION_RUNWAY, -AUTOROTATION_RUNWAY.length / 2 - 800, 0)
+const FLAMEOUT_AT = 6
 
 export const MISSIONS: Mission[] = [
   {
@@ -1713,6 +1811,130 @@ export const MISSIONS: Mission[] = [
       },
       outOfMissiles(2)
     ]
+  },
+  {
+    id: 'rooftop-landing',
+    title: 'Rooftop Landing',
+    category: 'Helicopter',
+    aircraft: 'uh60',
+    summary: 'Bring the Black Hawk down on a hospital roof in a gusty sea wind.',
+    briefing: `A patient transfer is waiting on the roof of ${HOSPITAL_PAD.name}. You start 3 km out over the sea at 1,000 ft. The wind is strong and gusty, so the hover drifts unless you let the stability system hold it. Press [Q] to hold a cruise speed and [E] to slow back to a hover, steer with the arrows, and hold [S] to come down. Land inside the painted square: anywhere else on the roof fails.`,
+    start: {
+      kind: 'air',
+      x: ROOFTOP_START.x,
+      z: ROOFTOP_START.z,
+      altitude: HOSPITAL_PAD.elevation + 300,
+      heading: ROOFTOP_START.inbound,
+      speed: 90
+    },
+    wind: 'strong',
+    timeLimit: 480,
+    objectives: [
+      {
+        text: 'Fly to the hospital. [Q] holds a cruise speed, [E] slows you back to a hover.',
+        done: c => fromPad('hospital', c) < 800
+      },
+      {
+        text: 'Slow to a hover over the roof pad, below 100 ft. Let go of the keys to steady it.',
+        done: overPad('hospital'),
+        hold: 2
+      },
+      { text: 'Hold [S] to settle onto the pad.', done: onPad('hospital') },
+      {
+        text: 'Keep holding [S] to lower the collective fully.',
+        done: c => onPad('hospital')(c) && c.controls.throttle < 0.1,
+        hold: 2
+      }
+    ],
+    failures: [
+      hardHover(400 * FPM, 'hold [S] with Shift for a slower descent.'),
+      offPad('hospital')
+    ]
+  },
+  {
+    id: 'sea-rescue',
+    title: 'Sea Rescue',
+    category: 'Helicopter',
+    aircraft: 'uh60',
+    summary: 'Winch three sailors off a sinking boat and fly them to the hospital roof.',
+    briefing: `A fishing boat is swamped ${Math.round((Math.hypot(RESCUE_BOAT.x - HOSPITAL_PAD.x, RESCUE_BOAT.z - HOSPITAL_PAD.z) / 1000) * 10) / 10} km out to sea, past the rescue ship, with three sailors aboard. Follow the orange smoke. Hover right over the boat, 20 to 100 ft above the water, and hold it steady: the winch brings up one sailor every ${12} seconds and stops while you drift. Then fly them back and land on the ${HOSPITAL_PAD.name} roof.`,
+    start: {
+      kind: 'air',
+      x: RESCUE_START.x,
+      z: RESCUE_START.z,
+      altitude: HOSPITAL_PAD.elevation + 150,
+      heading: (RESCUE_START.inbound + 180) % 360,
+      speed: 80
+    },
+    wind: 'light',
+    rescue: RESCUE_BOAT,
+    timeLimit: 900,
+    objectives: [
+      {
+        text: 'Fly out to the orange smoke. [Q] holds a cruise speed.',
+        done: c =>
+          Math.hypot(c.sim.position.x - RESCUE_BOAT.x, c.sim.position.z - RESCUE_BOAT.z) < 600
+      },
+      {
+        text: 'Slow down with [E], and hover right over the boat, 20 to 100 ft above the water.',
+        done: c => overBoat(c.sim, RESCUE_BOAT)
+      },
+      {
+        text: 'Hold the hover while the winch brings up all three sailors.',
+        done: c => c.aboard >= RESCUE_BOAT.survivors
+      },
+      { text: 'Fly back and land on the hospital roof pad.', done: onPad('hospital') },
+      {
+        text: 'Hold [S] to lower the collective fully.',
+        done: c => onPad('hospital')(c) && c.controls.throttle < 0.1,
+        hold: 2
+      }
+    ],
+    failures: [
+      hardHover(400 * FPM, 'hold [S] with Shift for a slower descent.'),
+      {
+        reason: 'The helicopter set down off the hospital pad. Land inside the painted square.',
+        failed: c => c.aboard >= RESCUE_BOAT.survivors && offPad('hospital').failed(c)
+      }
+    ]
+  },
+  {
+    id: 'autorotation',
+    title: 'Engine Failure',
+    category: 'Helicopter',
+    aircraft: 'uh60',
+    summary: 'Both engines quit at 1,500 ft. Glide down on the spinning rotor and land.',
+    briefing: `Bad fuel. Seconds after the start, both engines flame out over the approach to Coral Bay. The rotor keeps turning only while air flows up through it, so drop the collective at once with [S] and glide at about 80 knots. At about 100 ft, hold [↓] to flare: the nose comes up, you slow down, and the rotor speeds up. Just before the wheels touch, hold [W] to spend that spin on a soft landing. The runway or the grass both count.`,
+    start: {
+      kind: 'air',
+      x: AUTOROTATION_START.x,
+      z: AUTOROTATION_START.z,
+      altitude: airport('CBI').elevation + 460,
+      heading: AUTOROTATION_RUNWAY.heading,
+      speed: 80
+    },
+    script: c => {
+      if (c.time < FLAMEOUT_AT) return
+      for (const engine of c.sim.engines) engine.failed = true
+    },
+    timeLimit: 300,
+    objectives: [
+      {
+        text: 'When ENGINE OFF lights, hold [S] to drop the collective all the way.',
+        done: c => c.time > FLAMEOUT_AT && c.controls.throttle < 0.1
+      },
+      {
+        text: 'Glide at about 80 knots toward the runway. Keep the rotor near 100%.',
+        done: below(100)
+      },
+      { text: 'At about 100 ft, hold [↓] to flare and slow down.', done: below(25) },
+      {
+        text: 'Just before touchdown, hold [W] to cushion the landing.',
+        done: c => c.sim.onGround
+      },
+      { text: 'Hold [Space] to brake to a stop.', done: stopped }
+    ],
+    failures: [hardHover(500 * FPM, 'flare at 100 ft, and hold [W] just before the wheels touch.')]
   }
 ]
 
@@ -1759,6 +1981,9 @@ export class MissionRunner {
   gates = 0
   /** What to fix before a failure with a grace period runs out, and the seconds left. */
   warning: { text: string; left: number } | null = null
+  /** Rescue missions: survivors aboard, and the share of the next one's winching done. */
+  aboard = 0
+  hoist = 0
   private held = 0
   /** Seconds each failure's condition has held, net of the time it has not. */
   private strain: number[] = []
@@ -1771,6 +1996,8 @@ export class MissionRunner {
     this.step = 0
     this.time = 0
     this.gates = 0
+    this.aboard = 0
+    this.hoist = 0
     this.held = 0
     this.strain = mission.failures?.map(() => 0) ?? []
     this.warning = null
@@ -1791,7 +2018,7 @@ export class MissionRunner {
   /** Advances by `dt` seconds. Returns the result once the mission is decided. */
   update(
     dt: number,
-    context: Omit<MissionContext, 'time' | 'gates' | 'touchdown'>
+    context: Omit<MissionContext, 'time' | 'gates' | 'touchdown' | 'aboard'>
   ): MissionResult | null {
     const { mission } = this
     if (!mission) return null
@@ -1812,11 +2039,22 @@ export class MissionRunner {
       )
       if (distance < gate.radius) this.gates++
     }
+    // The winch brings survivors up one at a time while the hover holds. Drifting off
+    // pauses it.
+    const { rescue } = mission
+    if (rescue && this.aboard < rescue.survivors && overBoat(sim, rescue)) {
+      this.hoist += dt / HOIST_SECONDS
+      if (this.hoist >= 1) {
+        this.aboard++
+        this.hoist = 0
+      }
+    }
     const full: MissionContext = {
       ...context,
       time: this.time,
       gates: this.gates,
-      touchdown: this.touchdown
+      touchdown: this.touchdown,
+      aboard: this.aboard
     }
     mission.script?.(full)
     this.warning = null

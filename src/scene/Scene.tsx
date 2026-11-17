@@ -8,9 +8,11 @@ import { Bombing } from './Bombing'
 import { CameraRig } from './CameraRig'
 import { Effects } from './Effects'
 import { Glow } from './Glow'
+import { Helipads } from './Helipads'
 import { MissionGates } from './MissionGates'
 import { AircraftLights, LandingLight, TownLights } from './NightLights'
 import { PhotoCamera } from './PhotoCamera'
+import { RescueBoat } from './Rescue'
 import { ApproachPath, RunwayLights } from './RunwayLights'
 import { Balloons, Birds, Boats, Cities, Lighthouse, Roads, Villages } from './Scenery'
 import { Storm } from './Storm'
@@ -55,11 +57,13 @@ export function Scene() {
       <LandingLight />
       <ApproachPath />
       <MissionGates />
+      <RescueBoat />
       <Bombing />
       <AirCombat />
       <Trees />
       <Villages />
       <Cities />
+      <Helipads />
       <Roads />
       <Lighthouse />
       <Boats />
