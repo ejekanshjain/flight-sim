@@ -358,10 +358,7 @@ class Game {
     this.missions.stop()
     this.setState({ mission: null, missionResult: null, ...this.freeFlight })
     this.freeFlight = null
-    if (this.state.status !== 'flying') {
-      this.placeAtStand()
-      this.setState({ status: 'menu' })
-    }
+    if (this.state.status !== 'flying') this.openMenu()
   }
 
   private beginAtStand() {
@@ -458,6 +455,21 @@ class Game {
 
   resume = () => {
     if (this.state.status === 'paused') this.setState({ status: 'flying' })
+  }
+
+  /** Ends a paused free flight and opens the main menu, to pick another aircraft or a mission. */
+  backToMenu = () => {
+    if (this.state.status === 'paused' && !this.state.mission) this.openMenu()
+  }
+
+  /** Parks the picked aircraft cold at its stand behind the main menu, with no route or targets. */
+  private openMenu() {
+    this.placeAtStand()
+    this.liftoffTime = null
+    this.nav.load(null, this.sim)
+    this.combat.clear()
+    this.bombs.load(0, [])
+    this.setState({ status: 'menu', bombsight: false })
   }
 
   setWind = (wind: WindLevel) => this.change({ wind })

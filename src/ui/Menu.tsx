@@ -566,6 +566,9 @@ export function Menu() {
                         <Action onClick={game.startOnRunway}>On the Runway</Action>
                         <Action onClick={game.startInAir}>In the Air</Action>
                       </div>
+                      {status === 'paused' && (
+                        <Action onClick={game.backToMenu}>Back to the Menu</Action>
+                      )}
                     </div>
                   </div>
 
