@@ -3265,14 +3265,33 @@ function Cockpit({ spec }: { spec: AircraftSpec }) {
       {/* Drawn 2.6 times life size around the eye: it looks the same from the seat,
           and nothing sits closer than the camera can draw */}
       <group position={eye} scale={2.6}>
-        {/* Glareshield across the bottom of the view */}
-        <mesh material={TRIM} position={[-eye.x, -0.4, -0.85]}>
-          <boxGeometry args={[2.6, 0.1, 0.9]} />
-        </mesh>
-        {/* Instrument panel face below it, so the ground never shows under the glareshield */}
-        <mesh material={TRIM} position={[-eye.x, -1.15, -0.5]}>
-          <boxGeometry args={[2.6, 1.5, 0.1]} />
-        </mesh>
+        {kind === 'helicopter' ? (
+          <>
+            {/* A low panel with chin windows ahead of it, so you see the pad as you look down */}
+            <mesh material={TRIM} position={[-eye.x, -0.66, -0.42]}>
+              <boxGeometry args={[2.6, 0.1, 0.5]} />
+            </mesh>
+            <mesh material={TRIM} position={[-eye.x, -0.4, -0.95]}>
+              <boxGeometry args={[2.3, 0.03, 0.03]} />
+            </mesh>
+            {[-eye.x - 0.6, -eye.x, -eye.x + 0.6].map(x => (
+              <mesh key={x} material={TRIM} position={[x, -0.53, -0.8]} rotation-x={-0.6}>
+                <boxGeometry args={[0.03, 0.4, 0.03]} />
+              </mesh>
+            ))}
+          </>
+        ) : (
+          <>
+            {/* Glareshield across the bottom of the view */}
+            <mesh material={TRIM} position={[-eye.x, -0.4, -0.85]}>
+              <boxGeometry args={[2.6, 0.1, 0.9]} />
+            </mesh>
+            {/* Instrument panel face below it, so the ground never shows under the glareshield */}
+            <mesh material={TRIM} position={[-eye.x, -1.15, -0.5]}>
+              <boxGeometry args={[2.6, 1.5, 0.1]} />
+            </mesh>
+          </>
+        )}
         {kind === 'fighter' && (
           <>
             {/* Canopy bow, and the frame of the head-up display glass */}
