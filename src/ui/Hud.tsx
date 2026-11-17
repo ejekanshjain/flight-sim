@@ -14,6 +14,7 @@ import {
   VerticalSpeedIndicator
 } from './Gauges'
 import { EngineDisplay, HeadUpDisplay, NavigationDisplay, PrimaryFlightDisplay } from './Glass'
+import { GoalMarker, HoverDisplay } from './Goal'
 import { ApproachCard, BankIndicator, GpwsAlert } from './Guidance'
 import { MiniMap } from './MiniMap'
 import { BombPanel, CoachCard, MissionCard } from './Missions'
@@ -1107,12 +1108,14 @@ export function Hud() {
   const mission = useGame(state => state.mission)
   const bombsight = useGame(state => state.bombsight)
   const scale = usePanelScale()
+  const panel = useRef<HTMLDivElement>(null)
   return (
     <div
       className="pointer-events-none absolute inset-0 transition-opacity data-[dim=true]:opacity-40"
       data-dim={status !== 'flying'}
     >
       <HeadUpDisplay spec={spec} />
+      <GoalMarker panel={panel} />
       {/* Readouts, the bank arc, and notices stack down the middle so none covers another */}
       <div className="absolute top-0 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1">
         <Readouts />
@@ -1137,8 +1140,10 @@ export function Hud() {
       >
         {map !== 'hidden' && <MiniMap large={map === 'large'} />}
         <ApproachCard />
+        <HoverDisplay />
       </div>
       <div
+        ref={panel}
         className="absolute bottom-0 left-1/2 origin-bottom"
         style={{ transform: `translateX(-50%) scale(${scale})`, width: PANEL_WIDTH }}
       >

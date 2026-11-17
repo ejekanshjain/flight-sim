@@ -17,6 +17,7 @@ import {
 import { HANGAR } from '../sim/aircraft'
 import type { FlightSim } from '../sim/flight-sim'
 import { AIRPORTS } from '../world/island'
+import { distanceText, goalDirection, goalDistance } from './Goal'
 import { Key } from './Hud'
 import { setText, useTelemetry } from './telemetry'
 
@@ -207,33 +208,43 @@ const clock = (seconds: number) =>
 export function MissionCard({ mission }: { mission: Mission }) {
   const items = useRef<(HTMLLIElement | null)[]>([])
   const timer = useRef<HTMLSpanElement>(null)
+  const heading = useRef<HTMLParagraphElement>(null)
   const [alert, setAlert] = useState<{ text: string; left: number } | null>(null)
   const shown = useRef('')
   useTelemetry(
-    useCallback(() => {
-      const { step, time, gates } = game.missions
-      items.current.forEach((item, index) => {
-        if (!item) return
-        item.dataset.done = String(index < step)
-        item.dataset.next = String(index === step)
-        item.hidden = index < step - 1 || index > step + 2
-      })
-      const limit = mission.timeLimit
-      const parts = [
-        limit ? `${clock(Math.max(0, limit - time))} left` : clock(time),
-        mission.gates &&
-          `gate ${Math.min(gates + 1, mission.gates.length)} of ${mission.gates.length}`
-      ]
-      setText(timer.current, parts.filter(Boolean).join(' · '))
-      if (timer.current) timer.current.dataset.on = String(Boolean(limit && limit - time < 30))
-      // Only redraw the warning when its words or whole seconds change
-      const { warning } = game.missions
-      const next = warning ? `${warning.text} ${Math.ceil(warning.left)} s` : ''
-      if (next !== shown.current) {
-        shown.current = next
-        setAlert(warning && { text: warning.text, left: Math.ceil(warning.left) })
-      }
-    }, [mission])
+    useCallback(
+      (sim: FlightSim) => {
+        const { step, time, gates, goal } = game.missions
+        setText(
+          heading.current,
+          goal
+            ? `${goal.name}: ${distanceText(goalDistance(sim, goal))}, ${goalDirection(sim, goal)}`
+            : ''
+        )
+        items.current.forEach((item, index) => {
+          if (!item) return
+          item.dataset.done = String(index < step)
+          item.dataset.next = String(index === step)
+          item.hidden = index < step - 1 || index > step + 2
+        })
+        const limit = mission.timeLimit
+        const parts = [
+          limit ? `${clock(Math.max(0, limit - time))} left` : clock(time),
+          mission.gates &&
+            `gate ${Math.min(gates + 1, mission.gates.length)} of ${mission.gates.length}`
+        ]
+        setText(timer.current, parts.filter(Boolean).join(' · '))
+        if (timer.current) timer.current.dataset.on = String(Boolean(limit && limit - time < 30))
+        // Only redraw the warning when its words or whole seconds change
+        const { warning } = game.missions
+        const next = warning ? `${warning.text} ${Math.ceil(warning.left)} s` : ''
+        if (next !== shown.current) {
+          shown.current = next
+          setAlert(warning && { text: warning.text, left: Math.ceil(warning.left) })
+        }
+      },
+      [mission]
+    )
   )
   return (
     <div className="bg-paper/95 text-ink w-80 rounded-md px-4 py-3 text-sm shadow-lg">
@@ -254,6 +265,10 @@ export function MissionCard({ mission }: { mission: Mission }) {
           </li>
         ))}
       </ol>
+      <p
+        ref={heading}
+        className="border-ink/25 before:text-go mt-2 border-t pt-2 font-bold before:mr-1.5 before:content-['◆'] empty:hidden"
+      />
       {mission.enemies || mission.waves ? (
         <CombatPanel
           total={mission.missiles ?? 0}
@@ -300,7 +315,7 @@ function RescuePanel({ rescue }: { rescue: Rescue }) {
         const wheels = sim.position.y - sim.spec.restHeight
         let text = ''
         if (aboard >= rescue.survivors || away > 400) text = ''
-        else if (away > HOIST_REACH) text = `Boat ${Math.round(away)} m away. Hover right over it.`
+        else if (away > HOIST_REACH) text = 'Out of reach of the winch: hover right over the boat.'
         else if (wheels > HOIST_HIGH) {
           text = `Too high for the winch: come down below ${Math.round(HOIST_HIGH * FEET_PER_METRE)} ft.`
         } else if (wheels < HOIST_LOW) {

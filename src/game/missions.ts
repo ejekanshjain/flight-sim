@@ -90,7 +90,15 @@ export type Objective = {
   done: (context: MissionContext) => boolean
   /** Seconds the condition must hold before the step counts. */
   hold?: number
+  /** Where the step leads, marked on screen and on the map. */
+  goal?: Goal
 }
+
+/**
+ * A place to fly to: `y` is the height of its surface above sea level. `spot` is the radius
+ * in metres of a pad or a hover to hold over it, which the hover display shows on approach.
+ */
+export type Goal = { name: string; x: number; y: number; z: number; spot?: number }
 
 /** Where the mission begins. Headings are in degrees, speeds in knots, altitudes in metres. */
 export type MissionStart =
@@ -578,11 +586,33 @@ const RESCUE_BOAT = (() => {
   return { x, z, survivors: 3 }
 })()
 const RESCUE_START = seaward(500)
+const HOSPITAL_GOAL: Goal = {
+  name: 'Hospital pad',
+  x: HOSPITAL_PAD.x,
+  y: HOSPITAL_PAD.elevation,
+  z: HOSPITAL_PAD.z,
+  spot: HOSPITAL_PAD.radius
+}
+const BOAT_GOAL: Goal = {
+  name: 'Boat',
+  x: RESCUE_BOAT.x,
+  y: 0,
+  z: RESCUE_BOAT.z,
+  spot: HOIST_REACH
+}
 // Engine failure: on the extended centreline of Coral Bay's main runway, both engines
 // quitting this many seconds in
 const AUTOROTATION_RUNWAY = airport('CBI').runways[0]
 const AUTOROTATION_START = fromStrip(AUTOROTATION_RUNWAY, -AUTOROTATION_RUNWAY.length / 2 - 800, 0)
 const FLAMEOUT_AT = 6
+// The glide from the start reaches the runway about this far past its threshold
+const AUTOROTATION_AIM = fromStrip(AUTOROTATION_RUNWAY, -AUTOROTATION_RUNWAY.length / 2 + 1000, 0)
+const RUNWAY_GOAL: Goal = {
+  name: 'Runway 09',
+  x: AUTOROTATION_AIM.x,
+  y: airport('CBI').elevation,
+  z: AUTOROTATION_AIM.z
+}
 
 export const MISSIONS: Mission[] = [
   {
@@ -1818,7 +1848,7 @@ export const MISSIONS: Mission[] = [
     category: 'Helicopter',
     aircraft: 'uh60',
     summary: 'Bring the Black Hawk down on a hospital roof in a gusty sea wind.',
-    briefing: `A patient transfer is waiting on the roof of ${HOSPITAL_PAD.name}. You start 3 km out over the sea at 1,000 ft. The wind is strong and gusty, so the hover drifts unless you let the stability system hold it. Press [Q] to hold a cruise speed and [E] to slow back to a hover, steer with the arrows, and hold [S] to come down. Land inside the painted square: anywhere else on the roof fails.`,
+    briefing: `A patient transfer is waiting on the roof of ${HOSPITAL_PAD.name}. You start 3 km out over the sea at 1,000 ft, facing the hospital. A green marker shows the pad on screen and on the map. The wind is strong and gusty: the wind sock on the roof shows where it blows from. Press [Q] to hold a cruise speed and [E] to slow back to a hover, steer with the arrows, and hold [S] to come down. Land inside the painted square: anywhere else on the roof fails.`,
     start: {
       kind: 'air',
       x: ROOFTOP_START.x,
@@ -1831,15 +1861,21 @@ export const MISSIONS: Mission[] = [
     timeLimit: 480,
     objectives: [
       {
-        text: 'Fly to the hospital. [Q] holds a cruise speed, [E] slows you back to a hover.',
-        done: c => fromPad('hospital', c) < 800
+        text: 'Fly toward the green marker on the hospital. [Q] speeds up, [E] slows down.',
+        done: c => fromPad('hospital', c) < 800,
+        goal: HOSPITAL_GOAL
       },
       {
-        text: 'Slow to a hover over the roof pad, below 100 ft. Let go of the keys to steady it.',
+        text: 'Press [E] until the speed hold reads Hover, and come to a hover over the pad, below 100 ft.',
         done: overPad('hospital'),
-        hold: 2
+        hold: 2,
+        goal: HOSPITAL_GOAL
       },
-      { text: 'Hold [S] to settle onto the pad.', done: onPad('hospital') },
+      {
+        text: 'Hold [S] to settle. Keep the pad in the middle of the hover display.',
+        done: onPad('hospital'),
+        goal: HOSPITAL_GOAL
+      },
       {
         text: 'Keep holding [S] to lower the collective fully.',
         done: c => onPad('hospital')(c) && c.controls.throttle < 0.1,
@@ -1857,7 +1893,7 @@ export const MISSIONS: Mission[] = [
     category: 'Helicopter',
     aircraft: 'uh60',
     summary: 'Winch three sailors off a sinking boat and fly them to the hospital roof.',
-    briefing: `A fishing boat is swamped ${Math.round((Math.hypot(RESCUE_BOAT.x - HOSPITAL_PAD.x, RESCUE_BOAT.z - HOSPITAL_PAD.z) / 1000) * 10) / 10} km out to sea, past the rescue ship, with three sailors aboard. Follow the orange smoke. Hover right over the boat, 20 to 100 ft above the water, and hold it steady: the winch brings up one sailor every ${12} seconds and stops while you drift. Then fly them back and land on the ${HOSPITAL_PAD.name} roof.`,
+    briefing: `A fishing boat is swamped ${Math.round((Math.hypot(RESCUE_BOAT.x - HOSPITAL_PAD.x, RESCUE_BOAT.z - HOSPITAL_PAD.z) / 1000) * 10) / 10} km out to sea, past the rescue ship, with three sailors aboard. Follow the green marker and the orange smoke. Hover right over the boat, 20 to 100 ft above the water, and hold it steady: the winch brings up one sailor every ${HOIST_SECONDS} seconds and stops while you drift. Then turn back and land on the ${HOSPITAL_PAD.name} roof, where the marker leads next.`,
     start: {
       kind: 'air',
       x: RESCUE_START.x,
@@ -1871,19 +1907,31 @@ export const MISSIONS: Mission[] = [
     timeLimit: 900,
     objectives: [
       {
-        text: 'Fly out to the orange smoke. [Q] holds a cruise speed.',
+        text: 'Fly toward the green marker and the orange smoke. [Q] speeds up.',
         done: c =>
-          Math.hypot(c.sim.position.x - RESCUE_BOAT.x, c.sim.position.z - RESCUE_BOAT.z) < 600
+          Math.hypot(c.sim.position.x - RESCUE_BOAT.x, c.sim.position.z - RESCUE_BOAT.z) < 600,
+        goal: BOAT_GOAL
       },
       {
-        text: 'Slow down with [E], and hover right over the boat, 20 to 100 ft above the water.',
-        done: c => overBoat(c.sim, RESCUE_BOAT)
+        text: 'Press [E] until the speed hold reads Hover, and hover over the boat, 20 to 100 ft up.',
+        done: c => overBoat(c.sim, RESCUE_BOAT),
+        goal: BOAT_GOAL
       },
       {
         text: 'Hold the hover while the winch brings up all three sailors.',
-        done: c => c.aboard >= RESCUE_BOAT.survivors
+        done: c => c.aboard >= RESCUE_BOAT.survivors,
+        goal: BOAT_GOAL
       },
-      { text: 'Fly back and land on the hospital roof pad.', done: onPad('hospital') },
+      {
+        text: 'Turn back toward the hospital and follow the marker. [Q] speeds up.',
+        done: c => fromPad('hospital', c) < 800,
+        goal: HOSPITAL_GOAL
+      },
+      {
+        text: 'Slow to a hover over the roof pad, then hold [S] to land on it.',
+        done: onPad('hospital'),
+        goal: HOSPITAL_GOAL
+      },
       {
         text: 'Hold [S] to lower the collective fully.',
         done: c => onPad('hospital')(c) && c.controls.throttle < 0.1,
@@ -1921,16 +1969,23 @@ export const MISSIONS: Mission[] = [
     objectives: [
       {
         text: 'When ENGINE OFF lights, hold [S] to drop the collective all the way.',
-        done: c => c.time > FLAMEOUT_AT && c.controls.throttle < 0.1
+        done: c => c.time > FLAMEOUT_AT && c.controls.throttle < 0.1,
+        goal: RUNWAY_GOAL
       },
       {
-        text: 'Glide at about 80 knots toward the runway. Keep the rotor near 100%.',
-        done: below(100)
+        text: 'Glide at about 80 knots toward the marker on the runway. Keep the rotor near 100%.',
+        done: below(100),
+        goal: RUNWAY_GOAL
       },
-      { text: 'At about 100 ft, hold [↓] to flare and slow down.', done: below(25) },
+      {
+        text: 'At about 100 ft, hold [↓] to flare and slow down.',
+        done: below(25),
+        goal: RUNWAY_GOAL
+      },
       {
         text: 'Just before touchdown, hold [W] to cushion the landing.',
-        done: c => c.sim.onGround
+        done: c => c.sim.onGround,
+        goal: RUNWAY_GOAL
       },
       { text: 'Hold [Space] to brake to a stop.', done: stopped }
     ],
@@ -2009,6 +2064,11 @@ export class MissionRunner {
 
   stop() {
     this.mission = null
+  }
+
+  /** Where the step being worked on leads, or null. */
+  get goal() {
+    return this.mission?.objectives[this.step]?.goal ?? null
   }
 
   private pass(): MissionResult {

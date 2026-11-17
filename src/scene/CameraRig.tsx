@@ -39,6 +39,19 @@ const look = new Vector3()
 const ahead = new Vector3()
 const below = new Vector3()
 
+const viewers = new Set<(camera: PerspectiveCamera) => void>()
+
+/**
+ * Calls `listener` every frame once the camera has moved, for overlays pinned to a place in
+ * the world. Returns a function that stops the calls.
+ */
+export function onCameraMoved(listener: (camera: PerspectiveCamera) => void) {
+  viewers.add(listener)
+  return () => {
+    viewers.delete(listener)
+  }
+}
+
 const smoothstep = (edge0: number, edge1: number, x: number) => {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1)
   return t * t * (3 - 2 * t)
@@ -167,6 +180,8 @@ export function CameraRig() {
       camera.rotateX((Math.random() - 0.5) * shake)
       camera.rotateZ((Math.random() - 0.5) * shake)
     }
+    camera.updateMatrixWorld()
+    for (const viewer of viewers) viewer(camera)
   })
   return null
 }

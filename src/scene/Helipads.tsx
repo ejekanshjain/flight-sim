@@ -20,11 +20,13 @@ import {
   fromStrip,
   HELIPADS,
   HOSPITAL,
+  helipad,
   PLATFORM,
   RESCUE_SHIP,
   type Strip,
   type Structure
 } from '../world/island'
+import { Windsock } from './Airports'
 import { nightUniform } from './atmosphere'
 import { useDisposal } from './dispose'
 import { type Light, lightMaterial, pointsGeometry, type Rgb } from './lightPoints'
@@ -32,6 +34,13 @@ import { depthBias } from './logDepth'
 import { painted } from './Scenery'
 
 const UP = new Vector3(0, 1, 0)
+// Wind socks at a corner of each structure's pad, along and across it in metres, clear of the
+// rotor but still on the deck
+const SOCKS = [
+  { id: 'hospital', along: -17, across: 17 },
+  { id: 'ship', along: -12, across: 9 },
+  { id: 'platform', along: -12.5, across: 12.5 }
+] as const
 const radians = (degrees: number) => (degrees * Math.PI) / 180
 
 /** Position and axes a part is laid out on: a structure, or one of its decks. */
@@ -673,6 +682,11 @@ export function Helipads() {
       <mesh geometry={built.flame} material={built.flameMaterial} />
       <points geometry={built.lights} material={built.lightMaterial} frustumCulled={false} />
       <points geometry={built.work} material={built.workMaterial} frustumCulled={false} />
+      {SOCKS.map(sock => {
+        const pad = helipad(sock.id)
+        const spot = at(pad, sock.along, sock.across, pad.elevation)
+        return <Windsock key={sock.id} x={spot.x} z={spot.z} base={spot.y} pole={3} />
+      })}
     </>
   )
 }

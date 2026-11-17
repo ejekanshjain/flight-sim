@@ -82,7 +82,7 @@ function HelipadMarks({ size, large }: { size: number; large: boolean }) {
 
 /**
  * Map of the whole world with the airports, helipads, the aircraft's position and heading,
- * and other traffic.
+ * other traffic, and where the mission step leads.
  */
 export function MiniMap({ large }: { large: boolean }) {
   const storm = useGame(state => state.weather === 'storm')
@@ -100,6 +100,8 @@ export function MiniMap({ large }: { large: boolean }) {
   const route = useRef<SVGPolylineElement>(null)
   const fixes = useRef<(SVGCircleElement | null)[]>([])
   const gateDots = useRef<(SVGCircleElement | null)[]>([])
+  const goalLine = useRef<SVGLineElement>(null)
+  const goalRing = useRef<SVGGElement>(null)
   useEffect(() => {
     if (canvas.current) paintMap(canvas.current)
   }, [])
@@ -138,6 +140,20 @@ export function MiniMap({ large }: { large: boolean }) {
           dot.setAttribute('cy', place(gate.z))
           dot.setAttribute('fill', i === game.missions.gates ? '#4be36f' : '#f2a93b')
         })
+        // Where the mission step leads: a green ring, with a line from the aircraft to it
+        const goal = game.missions.goal
+        goalLine.current?.setAttribute('visibility', goal ? 'visible' : 'hidden')
+        goalRing.current?.setAttribute('visibility', goal ? 'visible' : 'hidden')
+        if (goal) {
+          goalLine.current?.setAttribute('x1', place(sim.position.x))
+          goalLine.current?.setAttribute('y1', place(sim.position.z))
+          goalLine.current?.setAttribute('x2', place(goal.x))
+          goalLine.current?.setAttribute('y2', place(goal.z))
+          goalRing.current?.setAttribute(
+            'transform',
+            `translate(${place(goal.x)} ${place(goal.z)})`
+          )
+        }
         // Other aircraft in flight show as white dots
         game.traffic.flying.forEach((craft, i) => {
           const dot = others.current[i]
@@ -178,6 +194,17 @@ export function MiniMap({ large }: { large: boolean }) {
         aria-hidden="true"
       >
         <HelipadMarks size={size} large={large} />
+        <line
+          ref={goalLine}
+          stroke="#4be36f"
+          strokeWidth="2"
+          strokeDasharray="4 4"
+          visibility="hidden"
+        />
+        <g ref={goalRing} visibility="hidden">
+          <circle r="9" fill="none" stroke="#1c2529" strokeWidth="4.5" />
+          <circle r="9" fill="none" stroke="#4be36f" strokeWidth="2.5" className="animate-pulse" />
+        </g>
         <polyline ref={route} fill="none" stroke="#e06bf0" strokeWidth="2" strokeLinejoin="round" />
         {Array.from({ length: 16 }, (_, i) => i).map(i => (
           <circle

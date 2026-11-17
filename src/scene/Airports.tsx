@@ -210,12 +210,23 @@ function RunwayNumbers({ runway, y }: { runway: Strip; y: number }) {
 // Sock with its mouth at the origin, pointing along +X
 const SOCK = new ConeGeometry(0.7, 4.5, 8, 1, true).rotateZ(-QUARTER_TURN).translate(2.25, 0, 0)
 
-/** Windsock that swings downwind and droops when the air is calm. */
-function Windsock({ airport }: { airport: Airport }) {
+/**
+ * Windsock that swings downwind and droops when the air is calm. It stands on the ground at
+ * `x`, `z`, with its foot `base` metres above sea level, on a pole `pole` metres tall.
+ */
+export function Windsock({
+  x,
+  z,
+  base,
+  pole = 7
+}: {
+  x: number
+  z: number
+  base: number
+  pole?: number
+}) {
   const swing = useRef<Group>(null)
   const droop = useRef<Group>(null)
-  const runway = airport.runways[0]
-  const spot = fromStrip(runway, -runway.length / 2 + 120, runway.width / 2 + 30)
   useFrame(() => {
     if (!swing.current || !droop.current) return
     const { x, z } = game.wind
@@ -224,12 +235,12 @@ function Windsock({ airport }: { airport: Airport }) {
     droop.current.rotation.z = -1.35 * (1 - Math.min(1, speed / 8))
   })
   return (
-    <group position={[spot.x, airport.elevation, spot.z]}>
-      <mesh position-y={3.5}>
-        <cylinderGeometry args={[0.08, 0.1, 7, 6]} />
+    <group position={[x, base, z]}>
+      <mesh position-y={pole / 2}>
+        <cylinderGeometry args={[0.08, 0.1, pole, 6]} />
         <meshStandardMaterial color="#d8d8d8" />
       </mesh>
-      <group ref={swing} position-y={7}>
+      <group ref={swing} position-y={pole}>
         <group ref={droop}>
           <mesh geometry={SOCK}>
             <meshStandardMaterial color="#f07a1c" side={DoubleSide} />
@@ -238,6 +249,13 @@ function Windsock({ airport }: { airport: Airport }) {
       </group>
     </group>
   )
+}
+
+/** The windsock beside an airport's main runway. */
+function RunwayWindsock({ airport }: { airport: Airport }) {
+  const runway = airport.runways[0]
+  const spot = fromStrip(runway, -runway.length / 2 + 120, runway.width / 2 + 30)
+  return <Windsock x={spot.x} z={spot.z} base={airport.elevation} />
 }
 
 /** Terminal, hangar, or control tower. Its long side runs along local Z. */
@@ -472,7 +490,7 @@ export function Airports() {
                 terminal={airport.buildings[0]}
               />
             ))}
-          <Windsock airport={airport} />
+          <RunwayWindsock airport={airport} />
         </group>
       ))}
     </>
