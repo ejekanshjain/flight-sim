@@ -33,7 +33,8 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
       [['←', '→'], 'Roll left, roll right'],
       [['A', 'D'], 'Rudder, and steering on the ground'],
       [['Shift'], 'Hold with the above for fine control'],
-      [['Q', 'E'], 'Trim nose down, nose up']
+      [['Q', 'E'], 'Trim nose down, nose up'],
+      [['Shift', 'Q', 'E'], 'Trim the rudder left, right. It stays when you let go']
     ]
   },
   {
@@ -588,6 +589,7 @@ function ReferenceTabs() {
   const wind = useGame(state => state.wind)
   const muted = useGame(state => state.muted)
   const coach = useGame(state => state.coach)
+  const autoRudder = useGame(state => state.autoRudder)
   const graphics = useGame(state => state.graphics)
   const weather = useGame(state => state.weather)
   const time = useGame(state => state.time)
@@ -679,9 +681,19 @@ function ReferenceTabs() {
             ]}
             onChange={value => game.setCoach(value === 'on')}
           />
+          <Choice
+            label="Auto-Rudder"
+            value={autoRudder ? 'on' : 'off'}
+            options={[
+              ['on', 'On'],
+              ['off', 'Off']
+            ]}
+            onChange={value => game.setAutoRudder(value === 'on')}
+          />
           <p className="text-sm leading-snug opacity-75">
-            The landing coach suggests keys on the final approach. Every setting is kept for your
-            next visit.
+            The landing coach suggests keys on the final approach. Auto-rudder keeps the nose
+            straight when you let go of A and D, even with an engine out. Every setting is kept for
+            your next visit.
           </p>
           <h3 className="border-ink/25 mt-1 border-t pt-3 font-bold">Graphics</h3>
           <Choice

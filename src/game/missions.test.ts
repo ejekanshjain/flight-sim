@@ -1076,3 +1076,45 @@ test('a pilot who drops the collective, glides, flares, and cushions survives th
   expect(sim.crash).toBeNull()
   expect(result).toEqual({ passed: true, touchdown: expect.any(Number) })
 })
+
+test('a Concorde crew who presses X and Y above 3,000 ft climbs past Mach 1.7 in time', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'supersonic')
+  const spec = HANGAR.find(candidate => candidate.id === 'concorde')
+  const runway = AIRPORTS.find(airport => airport.code === 'CBI')?.runways[0]
+  if (!mission || !spec || !runway) throw new Error('Missing mission')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  const start = fromStrip(runway, -runway.length / 2 + 150, 0)
+  sim.placeOnGround(start.x, start.z, (runway.heading * Math.PI) / 180)
+  const pilot = new Pilot()
+  pilot.resetForGround(sim, false)
+  const c = pilot.controls
+  const tap = (code: string) => {
+    pilot.press(code, false, sim)
+    pilot.release(code)
+  }
+  const result = runMission(mission, sim, pilot, time => {
+    if (time > 0.5 && !c.engineSwitches[0]) tap('KeyI')
+    if (sim.enginesRunning === 4 && c.parkingBrake) {
+      tap('KeyF')
+      tap('KeyP')
+    }
+    if (!sim.onGround && sim.altitudeAgl > 60 && c.gearDown) {
+      tap('KeyG')
+      tap('KeyV')
+    }
+    if (!pilot.autopilot.on && sim.altitudeAgl > 3000 * 0.3048) {
+      tap('KeyX')
+      tap('KeyY')
+    }
+    pilot.update(STEP, sim)
+    if (pilot.autopilot.on) return
+    // Full power, rotate at 195 knots, then climb 12° nose up
+    if (!c.parkingBrake) c.throttle = 1
+    const knots = sim.indicatedAirspeed / KNOT
+    const wanted = sim.onGround && knots < 195 ? sim.pitch : 12 * DEGREE
+    c.pitch = limit((wanted - sim.pitch) * 3 - sim.angularVelocity.x)
+    c.roll = limit(-sim.bank * 2)
+  })
+  expect(sim.crash).toBeNull()
+  expect(result).toMatchObject({ passed: true })
+})

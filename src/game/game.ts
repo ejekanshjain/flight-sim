@@ -72,6 +72,8 @@ export type GameState = {
   muted: boolean
   /** Live landing advice on screen. */
   coach: boolean
+  /** The rudder keeps the aircraft straight while A and D are let go. */
+  autoRudder: boolean
   /** The map starts small. M enlarges it, then hides it. */
   map: MapSize
   graphics: Graphics
@@ -477,6 +479,7 @@ class Game {
   setTime = (time: TimeOfDay) => this.change({ time })
   toggleMuted = () => this.change({ muted: !this.state.muted })
   setCoach = (on: boolean) => this.change({ coach: on })
+  setAutoRudder = (on: boolean) => this.change({ autoRudder: on })
   /** Enters or leaves the bombsight. It only opens with bombs aboard. */
   toggleBombsight = () => {
     const { bombs } = this
@@ -511,6 +514,7 @@ class Game {
       time: free.time,
       muted: this.state.muted,
       coach: this.state.coach,
+      autoRudder: this.state.autoRudder,
       map: this.state.map,
       camera: this.state.camera,
       graphics: this.state.graphics,
@@ -532,6 +536,7 @@ class Game {
     }
     if (status === 'flying') {
       this.nav.update(this.sim)
+      this.pilot.autoRudder = this.state.autoRudder
       this.pilot.update(dt, this.sim, this.nav)
       const steps = Math.ceil(dt / MAX_STEP)
       const step = dt / steps
@@ -997,6 +1002,7 @@ function savedState() {
     wind: saved.wind,
     muted: saved.muted,
     coach: saved.coach,
+    autoRudder: saved.autoRudder,
     map: saved.map,
     graphics: saved.graphics,
     weather: saved.weather,

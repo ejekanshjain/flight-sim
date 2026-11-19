@@ -1,3 +1,4 @@
+import { KNOT } from '../sim/aircraft'
 import type { Controls, FlightSim } from '../sim/flight-sim'
 import { APPROACHES, onCentreline } from '../world/approaches'
 import {
@@ -921,7 +922,7 @@ export const MISSIONS: Mission[] = [
     aircraft: 'b737',
     summary: 'Lose an engine on approach and land anyway.',
     briefing:
-      'You are on the ILS to runway 33 at Eastmark in a 737 MAX, gear and flaps down. Something is about to go wrong. Keep the aircraft straight with the rudder and land it.',
+      'You are on the ILS to runway 33 at Eastmark in a 737 MAX, gear and flaps down. Something is about to go wrong. Auto-rudder keeps the aircraft straight. With it off in the settings, you trim the rudder yourself. Then land it.',
     start: {
       kind: 'approach',
       approach: 'ILS 33 EMK',
@@ -936,11 +937,11 @@ export const MISSIONS: Mission[] = [
     },
     objectives: [
       {
-        text: 'Engine 1 is about to fail. Be ready with [D] rudder to keep the nose straight.',
+        text: 'Engine 1 is about to fail. Auto-rudder keeps the nose straight. With it off, hold [Shift] and [E] to trim the rudder right.',
         done: c => c.sim.engines[0].failed && c.time > 14
       },
       {
-        text: 'Keep holding [D] while the slip ball is off centre, and add power with [W] to stay on the glide path.',
+        text: 'One engine now does the work of two. Add power with [W] to stay on the glide path.',
         done: below(1000)
       },
       {
@@ -1100,7 +1101,7 @@ export const MISSIONS: Mission[] = [
         done: c => c.nav.approach !== null
       },
       {
-        text: 'Descend and fly the approach on one engine, or press [T] for the autopilot. Hold [A] rudder to keep straight.',
+        text: 'Descend and fly the approach on one engine, or press [T] for the autopilot. With auto-rudder off, trim the rudder left with [Shift] and [Q].',
         done: below(1000)
       },
       {
@@ -1308,9 +1309,15 @@ export const MISSIONS: Mission[] = [
     aircraft: 'concorde',
     summary: 'Take Concorde through the sound barrier to Mach 1.7.',
     briefing:
-      'Concorde waits on the runway at Coral Bay with power on. Take off with the afterburners and climb high before going fast: low down, the air is too thick and the airframe overspeeds. You have 30 minutes.',
+      'Concorde waits on the runway at Coral Bay with power on. Take off with the afterburners, then climb at 400 knots, no faster. Low down the air is thick, and past the red-and-black band on the speed scale the airframe breaks up. Climbing at a steady 400 knots takes you past Mach 1 near 27,000 ft and Mach 1.7 above 50,000 ft. The autopilot panel is already set for that climb. You have 30 minutes.',
     start: { kind: 'runway', airport: 'CBI' },
     timeLimit: 1800,
+    // Sets the autopilot panel for the climb: 400 knots, up to 60,000 ft
+    script: c => {
+      if (!c.sim.onGround) return
+      c.pilot.autothrottle.speed = 400 * KNOT
+      c.pilot.autopilot.altitude = 60_000 * FEET
+    },
     objectives: [
       ...startup(4).slice(2),
       {
@@ -1326,12 +1333,32 @@ export const MISSIONS: Mission[] = [
         done: c => !c.controls.gearDown && c.controls.flapNotch === 0
       },
       {
-        text: 'Climb at full throttle. Keep the speed below the red-and-black band on the speed scale.',
+        text: 'Above 3,000 ft, press [X] for the autothrottle, then [Y] for level change. The autopilot climbs at 400 knots to 60,000 ft.',
+        done: c =>
+          (c.pilot.autopilot.on && c.pilot.autothrottle.on) || c.sim.position.y > 10_000 * FEET
+      },
+      {
+        text: 'Climb at 400 knots. Flying by hand, raise the nose with [↓] whenever the speed passes 400.',
         done: c => c.sim.position.y > 20_000 * FEET
       },
-      { text: 'Break the sound barrier: pass Mach 1.', done: c => c.sim.mach > 1 },
-      { text: 'Climb above 50,000 ft.', done: c => c.sim.position.y > 50_000 * FEET },
-      { text: 'Accelerate past Mach 1.7.', done: c => c.sim.mach > 1.7 }
+      {
+        text: 'Keep climbing at 400 knots. Mach 1 comes near 27,000 ft.',
+        done: c => c.sim.mach > 1
+      },
+      {
+        text: 'Keep climbing at 400 knots, above 50,000 ft.',
+        done: c => c.sim.position.y > 50_000 * FEET
+      },
+      { text: 'Keep climbing at 400 knots until you pass Mach 1.7.', done: c => c.sim.mach > 1.7 }
+    ],
+    failures: [
+      {
+        reason:
+          'You flew past the speed limit for too long. Climb at 400 knots: press [X] and [Y] for the autopilot, or raise the nose.',
+        failed: c => c.sim.indicatedAirspeed > c.sim.speedLimit,
+        grace: 30,
+        warning: () => 'Overspeed! Raise the nose with [↓] or pull the power back with [S].'
+      }
     ]
   },
   {

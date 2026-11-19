@@ -96,8 +96,8 @@ export function landingAdvice(sim: FlightSim, nav: Navigator, pilot: Pilot): Adv
   // Wheel height above the runway, or above the ground on the way in over hills
   const above = Math.min(sim.altitudeAgl, sim.position.y - approach.end.elevation)
   const height = above - sim.spec.restHeight
-  // The autopilot works the rudder itself, but leaves the gear and flaps to the pilot
-  const yaw = pilot.autopilot.on ? null : rudder(sim)
+  // The autopilot and auto-rudder work the rudder themselves; the gear and flaps are the pilot's
+  const yaw = pilot.autopilot.on ? null : rudder(sim, pilot)
   const setup = configure(sim, pilot, height)
   if (pilot.flyingApproach) {
     const flying: Advice = autoland
@@ -164,15 +164,16 @@ function configure(sim: FlightSim, pilot: Pilot, height: number): Advice | null 
 
 /**
  * With an engine out, the good engines swing the nose toward the dead one and the aircraft
- * flies sideways. Rudder toward the good side centres the slip ball.
+ * flies sideways. Rudder trim toward the good side centres the slip ball and stays put.
  */
-function rudder(sim: FlightSim): Advice | null {
+function rudder(sim: FlightSim, pilot: Pilot): Advice | null {
+  if (pilot.autoRudder) return null
   const running = sim.engines.filter(engine => engine.running && !engine.failed).length
   if (running === 0 || running === sim.engines.length) return null
   if (Math.abs(sim.slip) < 1.5 * DEGREES) return null
-  const key = sim.slip > 0 ? 'D' : 'A'
+  const key = sim.slip > 0 ? 'E' : 'Q'
   return {
-    text: `Engine out, flying sideways: hold [${key}] for rudder until the slip ball centres.`,
+    text: `Engine out, flying sideways: hold [Shift] and [${key}] to trim the rudder until the slip ball centres.`,
     tone: Math.abs(sim.slip) > 3 * DEGREES ? 'warn' : 'fix'
   }
 }
@@ -208,7 +209,7 @@ function flare(
   }
   const side = flareSteer(sim, nav, approach)
   if (side) tips.push(side)
-  const yaw = rudder(sim)
+  const yaw = rudder(sim, pilot)
   if (yaw) tips.unshift(yaw)
   return combine(tips)
 }

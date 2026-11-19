@@ -73,3 +73,44 @@ test("the Mustang's supercharger carries it past 430 mph at 25,000 ft", () => {
   expect(sim.crash).toBeNull()
   expect(sim.trueAirspeed).toBeGreaterThan(192)
 })
+
+test('auto-rudder keeps a 737 straight hands off after an engine fails', () => {
+  const spec = HANGAR.find(candidate => candidate.id === 'b737')
+  if (!spec) throw new Error('Missing b737')
+  const turned = (autoRudder: boolean) => {
+    const sim = new FlightSim(ISLAND_GROUND, spec)
+    sim.placeInAir(-80_000, 1500, 60_000, Math.PI / 2, 100)
+    const pilot = new Pilot()
+    pilot.autoRudder = autoRudder
+    pilot.resetForAir(spec, sim)
+    Object.assign(pilot.controls, sim.settleOnPath(0, 0, false, new Vector3()))
+    sim.engines[0].failed = true
+    for (let time = 0; time < 20; time += STEP) {
+      pilot.update(STEP, sim)
+      sim.step(STEP, pilot.controls, new Vector3())
+    }
+    return Math.abs(sim.heading - Math.PI / 2)
+  }
+  expect(turned(true)).toBeLessThan(0.05)
+  expect(turned(false)).toBeGreaterThan(0.3)
+})
+
+test('letting go of the roll key stops an F-16 roll near that bank', () => {
+  const spec = HANGAR.find(candidate => candidate.id === 'f16')
+  if (!spec) throw new Error('Missing f16')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  sim.placeInAir(-80_000, 3000, 60_000, Math.PI / 2, 150)
+  const pilot = new Pilot()
+  pilot.resetForAir(spec, sim)
+  Object.assign(pilot.controls, sim.settleOnPath(0, 0, false, new Vector3()))
+  pilot.press('ArrowRight', false, sim)
+  let most = 0
+  for (let time = 0; time < 5; time += STEP) {
+    if (sim.bank > Math.PI / 4) pilot.releaseAll()
+    pilot.update(STEP, sim)
+    sim.step(STEP, pilot.controls, new Vector3())
+    most = Math.max(most, sim.bank)
+  }
+  // Rolling at 140°/s, it stops about 20° past where the key was let go
+  expect(most).toBeLessThan(Math.PI / 4 + 0.45)
+})

@@ -503,16 +503,21 @@ export class FlightSim {
     return { throttle: clamp((blade - low) / (high - low), 0, 1), trim: clamp(trim, -1, 0) }
   }
 
-  /** Throttle, 0 to 1, that holds a steady descent `glide` radians down at the current airspeed. */
+  /**
+   * Throttle, 0 to 1, that holds a steady descent `glide` radians down at the current
+   * airspeed. With an engine out, the working engines make up its share of the thrust.
+   */
   throttleFor(glide: number) {
-    return this.steadyDescent(glide, this.trueAirspeed).throttle
+    const working = this.engines.filter(engine => engine.running && !engine.failed).length
+    if (working === 0) return 0
+    return this.steadyDescent(glide, this.trueAirspeed, working / this.engines.length).throttle
   }
 
   /**
    * Wing angle, engine power, and throttle for a steady descent at `speed` m/s through the air,
-   * with the flaps and gear where they are now.
+   * with the flaps and gear where they are now. `working` is the share of engines that push.
    */
-  private steadyDescent(glide: number, speed: number) {
+  private steadyDescent(glide: number, speed: number, working = 1) {
     const A = this.spec
     const density = airDensity(this.position.y)
     const qS = 0.5 * density * Math.max(speed, 1) ** 2 * A.wingArea
@@ -525,7 +530,7 @@ export class FlightSim {
       this.gearPosition * A.gearDrag +
       this.flapPosition * A.flapDrag +
       A.inducedDrag * cl * cl
-    const thrust = Math.max(0, qS * cd - weight * Math.sin(glide))
+    const thrust = Math.max(0, qS * cd - weight * Math.sin(glide)) / working
     const power = this.powerFor(thrust, speed, density)
     const idle = A.engine.type === 'piston' ? A.engine.idlePower : 0
     return { alpha, power, throttle: clamp((power - idle) / (1 - idle), 0, 1) }

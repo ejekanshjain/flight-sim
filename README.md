@@ -61,12 +61,15 @@ The cockpit has working gauges, an autopilot with heading, navigation, level cha
 
 These are the main keys. The menu lists every control under **Controls**.
 
+Auto-rudder is on by default. It keeps the nose straight when you let go of A and D, even with an engine out. You can switch it off under **Settings**.
+
 | Keys | Plane | Helicopter |
 | --- | --- | --- |
 | Arrow keys | Pitch and roll | Tilt to fly forward, back, or sideways |
 | W and S | Throttle | Climb and descend |
 | A and D | Rudder | Turn on the spot |
 | Q and E | Trim | Set a speed to hold, down to a hover |
+| Shift with Q and E | Rudder trim | |
 | O, U, I | Battery, fuel pumps, engines | Battery, fuel pumps, engines |
 | F and V | Flaps | |
 | G | Landing gear | |
