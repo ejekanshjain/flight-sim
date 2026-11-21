@@ -48,6 +48,23 @@ function* strikePoints(sim: FlightSim) {
   for (const contact of sim.spec.contactPoints) yield contact.position
 }
 
+/** True when the strike point is inside an obstacle: its box when it has one, else its cylinder. */
+function inside(obstacle: Obstacle) {
+  const { box } = obstacle
+  if (!box) {
+    return insideCylinder(obstacle.x, obstacle.z, obstacle.base, obstacle.top, obstacle.radius)
+  }
+  if (point.y < obstacle.base || point.y > obstacle.top) return false
+  // Into the box's own axes, the inverse of how its cells were laid out
+  const dx = point.x - obstacle.x
+  const dz = point.z - obstacle.z
+  const cos = Math.cos(box.turn)
+  const sin = Math.sin(box.turn)
+  return (
+    Math.abs(cos * dx - sin * dz) <= box.halfWidth && Math.abs(sin * dx + cos * dz) <= box.halfDepth
+  )
+}
+
 function insideCylinder(x: number, z: number, base: number, top: number, radius: number) {
   return (
     point.y >= base &&
@@ -115,11 +132,7 @@ export function findCollision(
           ) {
             continue
           }
-          if (
-            insideCylinder(obstacle.x, obstacle.z, obstacle.base, obstacle.top, obstacle.radius)
-          ) {
-            return obstacle.kind
-          }
+          if (inside(obstacle)) return obstacle.kind
         }
       }
     }

@@ -11,41 +11,43 @@ A friend has built a VR version of the game. Play it at [flight-sim-vr.vercel.ap
 ## What You Can Do
 
 - **Fly free:** pick an aircraft and an airport, then start cold at the stand, lined up on the runway, or already in the air. Add a destination for a flight plan the autopilot can follow.
-- **Take on missions:** 36 missions in eight groups, from step-by-step tutorials to dogfights and sea rescues.
+- **Refuel anywhere:** every airport has fuel trucks by its stands. Stop beside one with the parking brake set, and the tanks fill in about 20 seconds.
+- **Fly over living cities:** five cities with their own look, skyscraper downtowns, traffic in the streets, and red beacons on the tall towers at night.
+- **Take on missions:** 37 missions in eight groups, from step-by-step tutorials to dogfights and sea rescues.
 - **Set the conditions:** calm, light, or strong wind. Clear, cloudy, rain, fog, or storm weather. Morning, noon, evening, or night.
 - **Take pictures:** photo mode freezes the flight, hides the panels, and gives you a free camera.
 
 ## The Aircraft
 
-| Aircraft | Kind |
-| --- | --- |
-| Cessna 172S Skyhawk | Light trainer |
-| P-51D Mustang | Piston fighter |
-| Airbus A320 | Narrow-body airliner |
-| Boeing 737 MAX 8 | Narrow-body airliner |
-| Boeing 787-9 Dreamliner | Wide-body airliner |
-| Airbus A380 | Double-deck airliner |
-| Concorde | Supersonic airliner |
-| F-16 Fighting Falcon | Jet fighter |
-| F-35A Lightning II | Stealth fighter |
-| B-2 Spirit | Stealth bomber |
-| Space Shuttle Orbiter | Unpowered glider |
-| Sikorsky UH-60 Black Hawk | Helicopter |
+| Aircraft                  | Kind                 |
+| ------------------------- | -------------------- |
+| Cessna 172S Skyhawk       | Light trainer        |
+| P-51D Mustang             | Piston fighter       |
+| Airbus A320               | Narrow-body airliner |
+| Boeing 737 MAX 8          | Narrow-body airliner |
+| Boeing 787-9 Dreamliner   | Wide-body airliner   |
+| Airbus A380               | Double-deck airliner |
+| Concorde                  | Supersonic airliner  |
+| F-16 Fighting Falcon      | Jet fighter          |
+| F-35A Lightning II        | Stealth fighter      |
+| B-2 Spirit                | Stealth bomber       |
+| Space Shuttle Orbiter     | Unpowered glider     |
+| Sikorsky UH-60 Black Hawk | Helicopter           |
 
 Each aircraft has its own engines, weight, speeds, and handling. Every one has a cockpit view and a chase view.
 
 ## Missions
 
-| Group | Missions | What you do |
-| --- | --- | --- |
-| Tutorial | 5 | Learn the controls, takeoff, landing, airliner startup, and the autopilot |
-| Speed Run | 3 | Race through rings against the clock |
-| Airline | 2 | Fly passengers gate to gate on a flight plan |
-| Challenge | 11 | Land after engine fires, hydraulic failures, fuel leaks, storms, and fog |
-| Bombing | 4 | Drop bombs on a range and on targets from the B-2 |
-| Strike | 3 | Fire missiles and fly low under the radar |
-| Air Combat | 5 | Dogfight, intercept, and escort a bomber against enemy fighters |
-| Helicopter | 3 | Land on a hospital roof, winch sailors off a sinking boat, and autorotate to a landing |
+| Group      | Missions | What you do                                                                              |
+| ---------- | -------- | ---------------------------------------------------------------------------------------- |
+| Tutorial   | 5        | Learn the controls, takeoff, landing, airliner startup, and the autopilot                |
+| Speed Run  | 4        | Race through rings against the clock, and down a city avenue on your side between towers |
+| Airline    | 2        | Fly passengers gate to gate on a flight plan                                             |
+| Challenge  | 11       | Land after engine fires, hydraulic failures, fuel leaks, storms, and fog                 |
+| Bombing    | 4        | Drop bombs on a range and on targets from the B-2                                        |
+| Strike     | 3        | Fire missiles and fly low under the radar                                                |
+| Air Combat | 5        | Dogfight, intercept, and escort a bomber against enemy fighters                          |
+| Helicopter | 3        | Land on a hospital roof, winch sailors off a sinking boat, and autorotate to a landing   |
 
 Each mission has a briefing and numbered steps. Landing missions also score your touchdown rate.
 
@@ -61,23 +63,20 @@ The cockpit has working gauges, an autopilot with heading, navigation, level cha
 
 These are the main keys. The menu lists every control under **Controls**.
 
-Auto-rudder is on by default. It keeps the nose straight when you let go of A and D, even with an engine out. You can switch it off under **Settings**.
-
-| Keys | Plane | Helicopter |
-| --- | --- | --- |
-| Arrow keys | Pitch and roll | Tilt to fly forward, back, or sideways |
-| W and S | Throttle | Climb and descend |
-| A and D | Rudder | Turn on the spot |
-| Q and E | Trim | Set a speed to hold, down to a hover |
-| Shift with Q and E | Rudder trim | |
-| O, U, I | Battery, fuel pumps, engines | Battery, fuel pumps, engines |
-| F and V | Flaps | |
-| G | Landing gear | |
-| Z | Autopilot | Autopilot |
-| T | Let the autopilot fly the approach | |
-| C | Chase or cockpit view | Chase or cockpit view |
-| M | Enlarge or hide the map | Enlarge or hide the map |
-| Esc | Pause | Pause |
+| Keys       | Plane                              | Helicopter                             |
+| ---------- | ---------------------------------- | -------------------------------------- |
+| Arrow keys | Pitch and roll                     | Tilt to fly forward, back, or sideways |
+| W and S    | Throttle                           | Climb and descend                      |
+| A and D    | Rudder                             | Turn on the spot                       |
+| Q and E    | Trim                               | Set a speed to hold, down to a hover   |
+| O, U, I    | Battery, fuel pumps, engines       | Battery, fuel pumps, engines           |
+| F and V    | Flaps                              |                                        |
+| G          | Landing gear                       |                                        |
+| Z          | Autopilot                          | Autopilot                              |
+| T          | Let the autopilot fly the approach |                                        |
+| C          | Chase or cockpit view              | Chase or cockpit view                  |
+| M          | Enlarge or hide the map            | Enlarge or hide the map                |
+| Esc        | Pause                              | Pause                                  |
 
 ## Run It Locally
 
@@ -108,12 +107,12 @@ bun run build      # production build into dist/
 
 The source is in five folders:
 
-| Folder | Contents |
-| --- | --- |
-| `src/sim` | The flight model and every aircraft's data |
-| `src/world` | The islands, airports, approaches, scenery, and weather |
-| `src/game` | The pilot's controls, autopilot, missions, sound, and effects |
-| `src/scene` | The 3D world, aircraft models, and camera |
-| `src/ui` | The menu, the instrument panel, the map, and mission cards |
+| Folder      | Contents                                                      |
+| ----------- | ------------------------------------------------------------- |
+| `src/sim`   | The flight model and every aircraft's data                    |
+| `src/world` | The islands, airports, approaches, scenery, and weather       |
+| `src/game`  | The pilot's controls, autopilot, missions, sound, and effects |
+| `src/scene` | The 3D world, aircraft models, and camera                     |
+| `src/ui`    | The menu, the instrument panel, the map, and mission cards    |
 
 The live site deploys to [Vercel](https://vercel.com/).

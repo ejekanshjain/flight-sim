@@ -60,8 +60,6 @@ export type Settings = {
   time: 'morning' | 'noon' | 'evening' | 'night'
   muted: boolean
   coach: boolean
-  /** In the air the rudder keeps the slip ball centred; on the runway it damps swings. */
-  autoRudder: boolean
   map: 'small' | 'large' | 'hidden'
   camera: 'chase' | 'cockpit'
   graphics: Graphics
@@ -77,7 +75,6 @@ export const DEFAULT_SETTINGS: Settings = {
   time: 'noon',
   muted: false,
   coach: true,
-  autoRudder: true,
   map: 'small',
   camera: 'chase',
   graphics: GRAPHICS_PRESETS.high,
@@ -124,7 +121,6 @@ export function loadSettings(): Settings {
       time: oneOf(stored.time, ['morning', 'noon', 'evening', 'night'], defaults.time),
       muted: oneOf(stored.muted, [true, false], defaults.muted),
       coach: oneOf(stored.coach, [true, false], oldCoach ? oldCoach !== 'off' : defaults.coach),
-      autoRudder: oneOf(stored.autoRudder, [true, false], defaults.autoRudder),
       map: oneOf(stored.map, ['small', 'large', 'hidden'], defaults.map),
       camera: oneOf(stored.camera, ['chase', 'cockpit'], defaults.camera),
       graphics: readGraphics(stored.graphics),

@@ -20,7 +20,10 @@ import {
   AIRPORTS,
   type Airport,
   type Building,
+  FUEL_STANDS,
+  type FuelStand,
   fromStrip,
+  heightAt,
   outside,
   type Stand,
   type Strip
@@ -403,6 +406,35 @@ function JetBridge({ stand, base, terminal }: { stand: Stand; base: number; term
 
 // Each flat layer is drawn this share of its distance nearer than the one below, so taxiways
 // sit on the ground, runways on taxiways, and paint on runways, without flickering
+/**
+ * A fuel truck parked beside a fuel stand, facing the way the stand does: a cab, a chassis,
+ * and a white tank with a red band. Its front is toward the stand's heading.
+ */
+function FuelTruck({ stand }: { stand: FuelStand }) {
+  const x = stand.x + Math.cos(stand.heading) * stand.aside
+  const z = stand.z + Math.sin(stand.heading) * stand.aside
+  return (
+    <group position={[x, heightAt(x, z), z]} rotation={[0, -stand.heading, 0]}>
+      <mesh position={[0, 0.7, 0]} castShadow>
+        <boxGeometry args={[2.4, 0.5, 9]} />
+        <meshStandardMaterial color="#2b2e33" roughness={0.7} />
+      </mesh>
+      <mesh position={[0, 1.9, -3.4]} castShadow>
+        <boxGeometry args={[2.4, 2, 2.2]} />
+        <meshStandardMaterial color="#d8402f" roughness={0.5} />
+      </mesh>
+      <mesh position={[0, 2.25, 1.1]} rotation={[QUARTER_TURN, 0, 0]} castShadow>
+        <cylinderGeometry args={[1.15, 1.15, 6.4, 16]} />
+        <meshStandardMaterial color="#eeeeea" roughness={0.4} metalness={0.2} />
+      </mesh>
+      <mesh position={[0, 2.25, 1.1]} rotation={[QUARTER_TURN, 0, 0]}>
+        <cylinderGeometry args={[1.17, 1.17, 0.6, 16]} />
+        <meshStandardMaterial color="#d8402f" roughness={0.5} />
+      </mesh>
+    </group>
+  )
+}
+
 const LAYER = { aprons: 0.0005, runways: 0.001, paint: 0.0015, numbers: 0.002 }
 
 /** Runways, taxiways, aprons, paint, and buildings for every airport on the map. */
@@ -492,6 +524,9 @@ export function Airports() {
             ))}
           <RunwayWindsock airport={airport} />
         </group>
+      ))}
+      {FUEL_STANDS.map(stand => (
+        <FuelTruck key={`${stand.x} ${stand.z}`} stand={stand} />
       ))}
     </>
   )

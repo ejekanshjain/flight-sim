@@ -106,7 +106,7 @@ const SPIN_RATE_LIMIT = 0.1
 // Shares of a full tank: the fuel the aircraft's listed mass includes, the load for a start
 // on the ground, and where dumping stops
 const LANDING_FUEL = 0.3
-const DEPARTURE_FUEL = 0.5
+const DEPARTURE_FUEL = 0.7
 export const DUMP_FLOOR = 0.2
 // Seconds to dump a full tank
 const DUMP_SECONDS = 300

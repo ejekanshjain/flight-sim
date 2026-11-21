@@ -13,12 +13,14 @@ import {
 } from '../world/island'
 import { Bombs, bombAdvice } from './bombs'
 import { landingAdvice } from './coach'
+import { findCollision } from './collision'
 import { AirCombat } from './combat'
 import { Effects } from './effects'
 import { combatSetup, MISSIONS, MissionRunner } from './missions'
 import { Navigator } from './navigation'
 import { Pilot } from './pilot'
 import { Storm } from './storm'
+import { Traffic } from './traffic'
 
 const STEP = 1 / 120
 const CALM = new Vector3()
@@ -627,7 +629,7 @@ test('a pilot holding right rudder keeps the Mustang straight and climbs away', 
     pilot.update(STEP, sim)
     if (sim.enginesRunning) c.throttle = 1
     // Rudder holds the runway heading; the stick keeps the tail down, then lifts off
-    c.yaw = limit(turnFrom(sim.heading, course) * 6 - sim.turnRate * 2)
+    c.yaw = limit(turnFrom(sim.heading, course) * 10 - sim.turnRate * 3)
     const wanted = sim.onGround ? (sim.indicatedAirspeed / KNOT > 105 ? 0.2 : sim.pitch) : 0.15
     c.pitch = limit((wanted - sim.pitch) * 3 - sim.angularVelocity.x)
     c.roll = limit(-sim.bank * 2)
@@ -1117,4 +1119,78 @@ test('a Concorde crew who presses X and Y above 3,000 ft climbs past Mach 1.7 in
   })
   expect(sim.crash).toBeNull()
   expect(result).toMatchObject({ passed: true })
+})
+
+test('the City Run avenue is clear down its middle, and each slot stands between two towers', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'city-run')
+  const gates = mission?.gates ?? []
+  const slots = gates.filter(gate => gate.slot)
+  expect(slots).toHaveLength(3)
+  // Fly the middle of the avenue at slot height, from the ring before the slots to the ring after
+  const before = gates[gates.indexOf(slots[0]) - 1]
+  const after = gates[gates.indexOf(slots[2]) + 1]
+  const sim = new FlightSim(ISLAND_GROUND, HANGAR.find(spec => spec.id === 'f16') ?? HANGAR[0])
+  const traffic = new Traffic()
+  for (let share = 0; share <= 1; share += 0.002) {
+    const x = before.x + (after.x - before.x) * share
+    const z = before.z + (after.z - before.z) * share
+    sim.placeInAir(x, slots[0].y, z, slots[0].heading, 130)
+    sim.altitudeAgl = slots[0].y - heightAt(x, z)
+    expect(findCollision(sim, 0, traffic)).toBeNull()
+  }
+  // A tower stands on each side of every slot, 45 m from its middle
+  for (const slot of slots) {
+    for (const side of [-1, 1]) {
+      const x = slot.x + Math.cos(slot.heading) * side * 45
+      const z = slot.z + Math.sin(slot.heading) * side * 45
+      sim.placeInAir(x, slot.y, z, slot.heading, 130)
+      sim.altitudeAgl = slot.y - heightAt(x, z)
+      expect(findCollision(sim, 0, traffic)).toBe('building')
+    }
+  }
+})
+
+test('a slot counts only when flown through on the side', () => {
+  const mission = MISSIONS.find(candidate => candidate.id === 'city-run')
+  const slot = mission?.gates?.find(gate => gate.slot)
+  if (!mission?.gates || !slot) throw new Error('Missing City Run slot')
+  const index = mission.gates.indexOf(slot)
+  const counted = (bank: number, across: number) => {
+    // The slot check reads only where the aircraft is and how far it is banked
+    const sim = {
+      spec: { wingSpan: 9.5 },
+      position: new Vector3(),
+      bank,
+      onGround: false,
+      verticalSpeed: 0,
+      altitudeAgl: 50
+    }
+    const runner = new MissionRunner()
+    runner.start(mission, sim as unknown as FlightSim)
+    runner.gates = index
+    const context = {
+      sim: sim as unknown as FlightSim,
+      controls: new Pilot().controls,
+      pilot: new Pilot(),
+      nav: new Navigator(),
+      parkedAt: null
+    }
+    // From 20 m short of the slot to 20 m past it, `across` metres to its right
+    for (const along of [-20, 20]) {
+      sim.position.set(
+        slot.x + Math.sin(slot.heading) * along + Math.cos(slot.heading) * across,
+        slot.y,
+        slot.z - Math.cos(slot.heading) * along + Math.sin(slot.heading) * across
+      )
+      runner.update(0.1, context)
+    }
+    return runner.gates > index
+  }
+  const halfWidth = (slot.slot?.width ?? 0) / 2
+  expect(counted(Math.PI / 2, 0)).toBe(true)
+  // 50° is enough, and so is a pass with part of a wing past the frame's edge
+  expect(counted(-0.87, 5)).toBe(true)
+  expect(counted(Math.PI / 2, halfWidth + 3)).toBe(true)
+  expect(counted(0.6, 0)).toBe(false)
+  expect(counted(Math.PI / 2, halfWidth + 15)).toBe(false)
 })

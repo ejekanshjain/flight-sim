@@ -157,6 +157,7 @@ const LAMPS: Lamp[] = [
   { label: 'ENGINE OFF', kind: 'notice', on: sim => sim.enginesRunning < sim.spec.engineCount },
   { label: 'LOW FUEL', kind: 'notice', on: sim => sim.fuel < sim.spec.fuelCapacity * 0.15 },
   { label: 'FUEL DUMP', kind: 'notice', on: sim => sim.dumping },
+  { label: 'REFUELLING', kind: 'notice', on: () => game.refuelling },
   {
     label: 'BRAKE',
     kind: 'notice',
@@ -194,11 +195,6 @@ function Levers({ spec }: { spec: AircraftSpec }) {
         if (spec.rotor) {
           const knots = Math.round(Math.max(0, -controls.trim) * spec.rotor.trimSpeed)
           setText(trimText.current, knots < 1 ? 'Hover' : `${knots} kt`)
-        } else {
-          // Rudder trim reads under the elevator trim, once set
-          const rudder = Math.round(game.pilot.rudderTrim * 100)
-          const side = rudder > 0 ? 'right' : 'left'
-          setText(trimText.current, rudder === 0 ? '\u00a0' : `Rudder ${Math.abs(rudder)}% ${side}`)
         }
       },
       [spec]
@@ -248,7 +244,7 @@ function Levers({ spec }: { spec: AircraftSpec }) {
             <span>{spec.rotor ? `${spec.rotor.trimSpeed} kt` : 'Nose down'}</span>
           </div>
         </div>
-        <span ref={trimText} className="text-marking text-xs whitespace-nowrap tabular-nums">
+        <span ref={trimText} className="text-marking text-xs tabular-nums">
           &nbsp;
         </span>
       </div>

@@ -36,6 +36,11 @@ export type Obstacle = {
   kind: 'tree' | 'building' | 'boat'
   /** Stays solid when a bomb flattens the city around it, as the hospital does. */
   bombproof?: boolean
+  /**
+   * A box instead of a cylinder: half its size along its own X and Z axes, and its turn
+   * around the vertical in radians. `radius` then reaches its corners, for the lookup.
+   */
+  box?: { halfWidth: number; halfDepth: number; turn: number }
 }
 
 export type House = {
@@ -137,8 +142,95 @@ export type CityBlock = {
   across: number
   length: number
   width: number
-  use: 'buildings' | 'houses' | 'park' | 'plaza' | 'hospital'
+  use: 'buildings' | 'houses' | 'park' | 'plaza' | 'hospital' | 'gateway'
 }
+
+/**
+ * Each city's look: the facade and glass tints it builds with, as indexes into the
+ * renderer's colours, how often a building is glass, and how often a skyscraper takes
+ * each shape. Shapes left over are plain blocks.
+ */
+type CityStyle = {
+  facades: number[]
+  glazing: number[]
+  glass: number
+  shapes: { setback: number; round: number; tapered: number; diamond: number }
+}
+
+const CITY_STYLES: Record<string, CityStyle> = {
+  // A glassy financial district by the sea
+  'Coral Bay': {
+    facades: [0, 3, 4],
+    glazing: [0, 4, 5, 10],
+    glass: 0.8,
+    shapes: { setback: 0.2, round: 0.15, tapered: 0.2, diamond: 0.15 }
+  },
+  // White stone and pale glass
+  'Port Azure': {
+    facades: [3, 0, 10],
+    glazing: [1, 5, 7],
+    glass: 0.45,
+    shapes: { setback: 0.4, round: 0.1, tapered: 0.15, diamond: 0 }
+  },
+  // Old brick warehouses and bronze glass
+  Eastmark: {
+    facades: [7, 8, 2],
+    glazing: [2, 8],
+    glass: 0.3,
+    shapes: { setback: 0.45, round: 0.05, tapered: 0.1, diamond: 0.05 }
+  },
+  // Dark modern towers
+  Northgate: {
+    facades: [9, 4, 1],
+    glazing: [9, 4, 3],
+    glass: 0.7,
+    shapes: { setback: 0.1, round: 0.2, tapered: 0.15, diamond: 0.25 }
+  },
+  // Warm sandstone and green glass
+  Verity: {
+    facades: [5, 2, 10],
+    glazing: [7, 1],
+    glass: 0.5,
+    shapes: { setback: 0.3, round: 0.15, tapered: 0.25, diamond: 0.05 }
+  }
+}
+
+/** An upright slot a mission flies through on its side, between two towers. */
+export type Slot = {
+  x: number
+  y: number
+  z: number
+  /** Direction to fly through, in radians clockwise from north. */
+  heading: number
+  width: number
+  height: number
+}
+
+type Shape = 'block' | 'setback' | 'round' | 'tapered' | 'diamond'
+
+/** A skyscraper shape for a draw from 0 to 1, by the city's share of each. */
+function pickShape(style: CityStyle, draw: number): Shape {
+  let left = draw
+  for (const shape of ['setback', 'round', 'tapered', 'diamond'] as const) {
+    left -= style.shapes[shape]
+    if (left < 0) return shape
+  }
+  return 'block'
+}
+
+// Downtown reaches this far out from the city's heart, as a share of its half size
+const DOWNTOWN = 0.45
+// The city run's gate towers: how far they stand back from the avenue, and their footprint
+// across and along it. The slot hangs between them, tall and narrow so it reads as one to fly
+// on the side, and starts this high above the street.
+const GATE_SETBACK = 4
+// Blocks along the city run's avenue step back this far, making it a wide boulevard
+const BOULEVARD = 15
+const GATE_WIDTH = 24
+const GATE_DEPTH = 34
+const SLOT_FLOOR = 20
+const SLOT_HEIGHT = 60
+const SLOT_WIDTH = 36
 
 /** Pointed cap on a skyscraper, or a mast on its roof. */
 export type Spire = { x: number; y: number; z: number; height: number; radius: number }
@@ -211,8 +303,12 @@ function buildCities() {
   const crowns: Crown[] = []
   const trees: ParkTree[] = []
   const houses: House[] = []
+  let slots: Slot[] = []
 
   for (const city of CITIES) {
+    const style = CITY_STYLES[city.name] ?? CITY_STYLES['Coral Bay']
+    const facade = () => style.facades[Math.floor(pick() * style.facades.length)]
+    const glazing = () => style.glazing[Math.floor(pick() * style.glazing.length)]
     const turn = (-city.heading * Math.PI) / 180
     const runway = AIRPORTS.find(airport => airport.code === city.home)?.runways[0]
     const runwaySide = runway ? Math.sign(toStrip(city, runway.x, runway.z).across) : 1
@@ -221,8 +317,10 @@ function buildCities() {
       across: -runwaySide * city.width * 0.18
     }
     const blocks: CityBlock[] = []
+    // One grid for the whole city, so its streets and avenues run straight across it
+    const acrossSpans = blockSpans(city.width, pick)
     for (const [alongFrom, alongTo] of blockSpans(city.length, pick)) {
-      for (const [acrossFrom, acrossTo] of blockSpans(city.width, pick)) {
+      for (const [acrossFrom, acrossTo] of acrossSpans) {
         blocks.push({
           along: (alongFrom + alongTo) / 2,
           across: (acrossFrom + acrossTo) / 2,
@@ -245,6 +343,49 @@ function buildCities() {
       else if (pick() < (r < 0.3 ? 0.03 : 0.08)) block.use = 'park'
       else if (r > 0.78 && pick() < 0.55) block.use = 'houses'
     }
+    // Coral Bay's city run: at three points along the avenue nearest downtown, a slim tower
+    // stands on each side of it, with a slot to fly through between them
+    const grounds = toStrip(city, HOSPITAL_GROUNDS.x, HOSPITAL_GROUNDS.z)
+    const underHospital = (block: CityBlock) =>
+      Math.abs(block.along - grounds.along) * 2 < block.length + HOSPITAL_GROUNDS.length + 40 &&
+      Math.abs(block.across - grounds.across) * 2 < block.width + HOSPITAL_GROUNDS.width + 40
+    let avenue = 0
+    if (city === CITIES[0]) {
+      let nearest = Number.POSITIVE_INFINITY
+      let sides: number[] = []
+      for (let i = 1; i < acrossSpans.length; i++) {
+        const [, leftEdge] = acrossSpans[i - 1]
+        const [rightEdge] = acrossSpans[i]
+        const middle = (leftEdge + rightEdge) / 2
+        if (rightEdge - leftEdge < AVENUE - 1 || Math.abs(middle - core.across) >= nearest) continue
+        nearest = Math.abs(middle - core.across)
+        avenue = middle
+        sides = [i - 1, i].map(k => (acrossSpans[k][0] + acrossSpans[k][1]) / 2)
+      }
+      // Widen the avenue into a boulevard by trimming the blocks on each side of it
+      for (const block of blocks) {
+        if (!sides.includes(block.across)) continue
+        const toward = Math.sign(avenue - block.across)
+        block.width -= BOULEVARD
+        block.across -= (toward * BOULEVARD) / 2
+      }
+      sides = sides.map(across => across - (Math.sign(avenue - across) * BOULEVARD) / 2)
+      const rows = [...new Set(blocks.map(block => block.along))].sort((a, b) => a - b)
+      for (const offset of [-800, 0, 800]) {
+        const wanted = core.along + offset
+        const fits = rows.filter(row => {
+          const pair = blocks.filter(block => block.along === row && sides.includes(block.across))
+          return pair.length === 2 && pair.every(block => block !== heart && !underHospital(block))
+        })
+        const row = fits.reduce(
+          (best, along) => (Math.abs(along - wanted) < Math.abs(best - wanted) ? along : best),
+          fits[0]
+        )
+        for (const block of blocks) {
+          if (block.along === row && sides.includes(block.across)) block.use = 'gateway'
+        }
+      }
+    }
     plans.push({ city, blocks })
     // The three building blocks closest to the plaza get the city's landmark skyscrapers
     const landmarks = blocks
@@ -257,31 +398,37 @@ function buildCities() {
       along: number,
       across: number,
       part: Omit<Tower, 'x' | 'y' | 'z' | 'turn'>,
-      base?: number
+      base?: number,
+      twist = 0
     ) => {
       const spot = fromStrip(city, along, across)
       const y = base ?? baseHeight(spot.x, spot.z, Math.max(part.width, part.depth) / 2)
-      towers.push({ ...part, x: spot.x, y, z: spot.z, turn })
+      towers.push({ ...part, x: spot.x, y, z: spot.z, turn: turn + twist })
       return y + part.height
     }
 
-    /** A skyscraper: a plain block, a stack of setbacks, or a glass cylinder, topped off. */
-    /** `look` picks the shape (0 to 1) and the roof (0 to 1) instead of leaving them to chance. */
+    /**
+     * A skyscraper in one of the city's shapes, topped off: a plain block, a stack of
+     * setbacks, a glass cylinder, a tapering stack, or a block turned 45° to the street.
+     * `look` picks the shape and the roof (0 to 1) instead of leaving them to chance.
+     */
     const tower = (
       along: number,
       across: number,
       size: number,
       height: number,
       base: number,
-      look?: [style: number, finish: number]
+      look?: [shape: Shape, finish: number]
     ) => {
-      const style = look?.[0] ?? pick()
-      const glass = pick() < 0.65
-      const tint = Math.floor(pick() * 6)
+      const shape = look?.[0] ?? pickShape(style, pick())
+      const glass = pick() < style.glass
+      const tint = glass ? glazing() : facade()
       let top = base
       let topSize = size
-      const round = style >= 0.35 && style < 0.52
-      if (style < 0.35) {
+      const round = shape === 'round'
+      const turned = shape === 'diamond'
+      const twist = turned ? Math.PI / 4 : 0
+      if (shape === 'setback') {
         // Setbacks: each tier narrower than the one below
         const shares = [0.5, 0.3, 0.2]
         shares.forEach((share, tier) => {
@@ -304,12 +451,32 @@ function buildCities() {
         top = place(
           along,
           across,
-          { width: size, depth: size, height, glass: true, round: true, tint },
+          { width: size, depth: size, height, glass: true, round: true, tint: glazing() },
           top
         )
+      } else if (shape === 'tapered') {
+        // Six even tiers, each a little slimmer, so the tower narrows toward the sky
+        for (let tier = 0; tier < 6; tier++) {
+          topSize = size * 0.9 ** tier
+          top = place(
+            along,
+            across,
+            { width: topSize, depth: topSize, height: height / 6, glass, round: false, tint },
+            top
+          )
+        }
       } else {
-        const depth = size * between(0.8, 1.5)
-        top = place(along, across, { width: size, depth, height, glass, round: false, tint }, top)
+        // A block turned 45° must shrink to stay inside its lot
+        const depth = turned ? size : size * between(0.8, 1.5)
+        const width = turned ? size * Math.SQRT1_2 : size
+        top = place(
+          along,
+          across,
+          { width, depth: turned ? width : depth, height, glass, round: false, tint },
+          top,
+          twist
+        )
+        topSize = width
       }
       const spot = fromStrip(city, along, across)
       const finish = look?.[1] ?? pick()
@@ -324,7 +491,7 @@ function buildCities() {
         crowns.push({
           ...spot,
           y: top,
-          turn,
+          turn: turn + twist,
           width: topSize,
           depth: topSize,
           height: height * between(0.06, 0.12),
@@ -345,7 +512,8 @@ function buildCities() {
             round: false,
             tint: 6
           },
-          top
+          top,
+          twist
         )
         if (pick() < 0.5) spires.push({ ...spot, y: plant, height: between(8, 20), radius: 0.4 })
       }
@@ -361,6 +529,42 @@ function buildCities() {
       const ceiling = buildingCeiling(center.x, center.z)
       const ground = baseHeight(center.x, center.z, Math.max(block.length, block.width) / 2)
       const room = ceiling - ground
+
+      if (block.use === 'gateway') {
+        // A slim glass tower at the block's avenue edge, and open paving behind it
+        const toward = Math.sign(avenue - block.across)
+        const edge = block.across + (toward * block.width) / 2
+        const across = edge - toward * (GATE_SETBACK + GATE_WIDTH / 2)
+        const height = Math.min(between(180, 230), room - 12)
+        const top = place(
+          block.along,
+          across,
+          {
+            width: GATE_WIDTH,
+            depth: GATE_DEPTH,
+            height,
+            glass: true,
+            round: false,
+            tint: glazing()
+          },
+          ground
+        )
+        const spot = fromStrip(city, block.along, across)
+        spires.push({ ...spot, y: top, height: 24, radius: 1.2 })
+        // The left tower of each pair sets the slot over the avenue
+        if (toward > 0) {
+          const middle = fromStrip(city, block.along, avenue)
+          slots.push({
+            x: middle.x,
+            y: ground + SLOT_FLOOR + SLOT_HEIGHT / 2,
+            z: middle.z,
+            heading: (city.heading * Math.PI) / 180,
+            width: SLOT_WIDTH,
+            height: SLOT_HEIGHT
+          })
+        }
+        continue
+      }
 
       if (block.use === 'park' || block.use === 'plaza') {
         const spacing = block.use === 'park' ? 13 : 24
@@ -402,10 +606,12 @@ function buildCities() {
         continue
       }
 
-      if (r < 0.38 && room > 70) {
+      if (r < DOWNTOWN && room > 70) {
         // Downtown: towers on podiums, tallest near the heart of the city
         const landmark = landmarks.indexOf(block)
         const pair = block.length > 100 && landmark < 0 ? 2 : 1
+        // Big blocks near the heart take a second row of towers across them
+        const rows = block.width > 100 && landmark < 0 && r < DOWNTOWN * 0.7 ? 2 : 1
         if (pick() < 0.6) {
           place(block.along, block.across, {
             width: block.width - 10,
@@ -413,28 +619,34 @@ function buildCities() {
             height: between(10, 18),
             glass: false,
             round: false,
-            tint: Math.floor(pick() * 6)
+            tint: facade()
           })
         }
-        for (let k = 0; k < pair; k++) {
-          const along = block.along + (pair === 2 ? (k - 0.5) * block.length * 0.5 : 0)
+        for (let k = 0; k < pair * rows; k++) {
+          const along = block.along + (pair === 2 ? ((k % 2) - 0.5) * block.length * 0.5 : 0)
+          const across =
+            block.across + (rows === 2 ? (Math.floor(k / pair) - 0.5) * block.width * 0.5 : 0)
           if (landmark >= 0) {
             // A stepped tower with a spire, a glass cylinder, and a block with a pointed crown
             const size = Math.min(block.width - 16, block.length - 16, between(46, 58))
-            const height = Math.min([340, 290, 255][landmark] * between(0.92, 1.05), room - 12)
-            const looks: [number, number][] = [
-              [0.1, 0.1],
-              [0.4, 0.9],
-              [0.8, 0.4]
+            const height = Math.min([400, 350, 310][landmark] * between(0.92, 1.05), room - 12)
+            const looks: [Shape, number][] = [
+              ['setback', 0.1],
+              ['round', 0.9],
+              ['tapered', 0.4]
             ]
-            tower(along, block.across, size, height, ground, looks[landmark])
+            tower(along, across, size, height, ground, looks[landmark])
             continue
           }
-          const size = Math.min(block.width - 18, block.length / pair - 14, between(30, 52))
-          const wanted = (260 - (r / 0.38) * 160) * between(0.5, 1.05)
+          const size = Math.min(
+            block.width / rows - 18,
+            block.length / pair - 14,
+            between(28, rows === 2 ? 40 : 52)
+          )
+          const wanted = (330 - (r / DOWNTOWN) * 200) * between(0.5, 1.05)
           const height = Math.min(wanted, room - 12)
           if (height < 45) continue
-          tower(along, block.across, size, height, ground)
+          tower(along, across, size, height, ground)
         }
         continue
       }
@@ -463,7 +675,7 @@ function buildCities() {
             height,
             glass,
             round: false,
-            tint: Math.floor(pick() * 6)
+            tint: glass ? glazing() : facade()
           })
           // Plant on the roofs of bigger buildings
           if (height > 20 && pick() < 0.5) {
@@ -486,7 +698,6 @@ function buildCities() {
     }
     // The hospital takes over the blocks under its grounds. They are laid out as usual and then
     // emptied, so every other block keeps the same buildings.
-    const grounds = toStrip(city, HOSPITAL_GROUNDS.x, HOSPITAL_GROUNDS.z)
     for (let i = blocks.length - 1; i >= 0; i--) {
       const block = blocks[i]
       if (
@@ -528,7 +739,10 @@ function buildCities() {
       }
     }
   }
-  return { plans, towers, spires, crowns, trees, houses }
+  slots = slots.sort(
+    (a, b) => toStrip(CITIES[0], a.x, a.z).along - toStrip(CITIES[0], b.x, b.z).along
+  )
+  return { plans, towers, spires, crowns, trees, houses, slots }
 }
 
 /** Walks inland along a compass bearing and returns the first point at least `minHeight` high. */
@@ -586,6 +800,8 @@ export const TOWERS = CITY.towers
 export const SPIRES = CITY.spires
 export const CROWNS = CITY.crowns
 export const PARK_TREES = CITY.trees
+/** Coral Bay's city run slots, in order along its avenue. */
+export const CITY_SLOTS = CITY.slots
 export const HOUSES = [...buildHouses(), ...CITY.houses]
 export const LIGHTHOUSE = findHeadland()
 export const SAILBOATS = seaRoutes(36, 700, 2600, [2, 4.5])
@@ -702,7 +918,7 @@ export const OBSTACLES: Obstacle[] = [
       kind: 'building'
     })
   ),
-  // Big blocks become a grid of circles, small enough for the collision lookup
+  // Big blocks become a grid of boxes, small enough for the collision lookup
   ...TOWERS.flatMap(tower => {
     if (tower.round) {
       const { x, z, y, height, width } = tower
@@ -723,8 +939,9 @@ export const OBSTACLES: Obstacle[] = [
           z: tower.z - Math.sin(tower.turn) * localX + Math.cos(tower.turn) * localZ,
           base: tower.y,
           top: tower.y + tower.height,
-          radius: Math.hypot(cellWidth, cellDepth) * 0.45,
-          kind: 'building'
+          radius: Math.hypot(cellWidth, cellDepth) / 2,
+          kind: 'building',
+          box: { halfWidth: cellWidth / 2, halfDepth: cellDepth / 2, turn: tower.turn }
         })
       }
     }

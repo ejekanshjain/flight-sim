@@ -17,10 +17,6 @@ const FPM = 0.00508
 const DEFLECT_RATE = 1.8
 const PITCH_RATE = 0.9
 const CENTER_RATE = 3
-// Fly-by-wire with the roll keys let go: aileron per rad/s of roll that stops the roll, and
-// how fast the aileron moves to it, so the bank holds where the key was let go
-const ROLL_STOP = 3
-const ROLL_STOP_RATE = 20
 // A tap moves controls at this share of full rate; holding builds up to full rate in RAMP_SECONDS
 const TAP_SHARE = 0.3
 const RAMP_SECONDS = 0.6
@@ -28,14 +24,6 @@ const RAMP_SECONDS = 0.6
 const FINE_SHARE = 0.35
 const THROTTLE_RATE = 0.5
 const TRIM_RATE = 0.25
-// In the air the rudder keys reach this share of full rudder, so a held key slips the
-// aircraft about 5 to 10° rather than throwing it sideways
-const AIR_RUDDER = 0.5
-// On the ground, auto-rudder damps swings above GROUND_DAMPER_FROM m/s with this much rudder
-// per rad/s of turn at GROUND_DAMPER_SPEED m/s, less as the rudder bites harder with speed
-const GROUND_DAMPER = 3
-const GROUND_DAMPER_FROM = 8
-const GROUND_DAMPER_SPEED = 30
 // Autopilot knob speeds per second while held: radians, metres, m/s, and m/s of climb
 const HEADING_RATE = 0.35
 const ALTITUDE_RATE = 60
@@ -161,13 +149,6 @@ export class Pilot {
   /** Autothrottle: holds the speed knob, an indicated airspeed in m/s. */
   readonly autothrottle = { on: false, speed: 0 }
   landingLights = false
-  /**
-   * Auto-rudder: in the air with A and D let go, the rudder centres the slip ball and
-   * balances uneven engines, as the yaw damper does under the autopilot.
-   */
-  autoRudder = true
-  /** Rudder trim, -1 to 1: a steady rudder that stays when the keys are let go. */
-  rudderTrim = 0
 
   private readonly held = new Map<string, number>()
   private climbTrim = 0
@@ -179,8 +160,6 @@ export class Pilot {
   private rollTrim = 0
   /** Rudder the yaw damper has built up against a steady slip. */
   private rudderHold = 0
-  /** Rudder from A and D alone, before the trim and the yaw damper add theirs. */
-  private pedal = 0
   private lastAirspeed = 0
   /** Helicopters: the height the collective holds hands off, and the collective that holds it. */
   private heightHold: number | null = null
@@ -201,8 +180,6 @@ export class Pilot {
   resetForGround(sim: FlightSim, cold: boolean) {
     Object.assign(this.controls, PARKED, { battery: !cold, fuelPumps: !cold })
     this.landingLights = false
-    this.rudderTrim = 0
-    this.pedal = 0
     this.controls.engineSwitches.fill(false)
     this.heightHold = null
     this.collectiveHeld = false
@@ -221,8 +198,6 @@ export class Pilot {
       gearDown: !spec.retractableGear
     })
     this.controls.engineSwitches.fill(true)
-    this.rudderTrim = 0
-    this.pedal = 0
     this.heightHold = null
     this.collectiveHeld = false
     this.disengage()
@@ -438,20 +413,7 @@ export class Pilot {
       this.fly(dt, sim, nav, rollReach, pitchReach)
     } else {
       c.pitch = this.deflect(c.pitch, stick * pitchReach, dt, PITCH_RATE, 'ArrowDown', 'ArrowUp')
-      if (wheel === 0 && spec.flyByWire && !sim.onGround) {
-        // Positive roll rolls right, which spins the body about -z
-        const stop = clamp(sim.angularVelocity.z * ROLL_STOP, -1, 1)
-        c.roll = approach(c.roll, stop, ROLL_STOP_RATE * dt)
-      } else {
-        c.roll = this.deflect(
-          c.roll,
-          wheel * rollReach,
-          dt,
-          DEFLECT_RATE,
-          'ArrowRight',
-          'ArrowLeft'
-        )
-      }
+      c.roll = this.deflect(c.roll, wheel * rollReach, dt, DEFLECT_RATE, 'ArrowRight', 'ArrowLeft')
     }
 
     if (spec.rotor) this.flyCollective(dt, sim, lever)
@@ -461,40 +423,32 @@ export class Pilot {
 
     if (spec.autoFlaps) c.flapNotch = c.gearDown ? spec.flapLabels.length - 1 : 0
     const pedals = this.axis('KeyD', 'KeyA')
-    // Shift with Q or E trims the rudder instead of the elevator
-    const trim = this.axis('KeyE', 'KeyQ')
-    const trimsRudder = this.held.has('Shift') && !spec.rotor
-    if (trimsRudder) {
-      this.rudderTrim = clamp(
-        this.rudderTrim + trim * TRIM_RATE * this.ramp('KeyE', 'KeyQ') * dt,
-        -1,
-        1
-      )
-    } else {
-      // A helicopter's trim only holds a forward speed, from a hover (0) to its fastest (-1)
-      const most = spec.rotor ? 0 : 1
-      c.trim = clamp(c.trim + trim * TRIM_RATE * this.ramp('KeyE', 'KeyQ') * dt, -1, most)
-    }
-    // Air loads limit the rudder's travel at speed, as they do the ailerons
-    const rudderReach = sim.onGround || spec.rotor ? fine : rollReach * AIR_RUDDER
-    this.pedal = this.deflect(this.pedal, pedals * rudderReach, dt, DEFLECT_RATE, 'KeyD', 'KeyA')
     // A helicopter's stability system holds the heading and balances turns by itself
-    if (spec.rotor) c.yaw = this.pedal
+    if (spec.rotor) c.yaw = this.deflect(c.yaw, pedals * fine, dt, DEFLECT_RATE, 'KeyD', 'KeyA')
     else if (autopilot.on && pedals === 0 && sim.onGround) {
       // Rolling out after an autoland: the rudder steers along the runway
       c.yaw = this.rudderHold
-    } else if ((autopilot.on || this.autoRudder) && !sim.onGround) {
-      c.yaw = clamp(this.yawDamper(dt, sim, pedals === 0) + this.pedal + this.rudderTrim, -1, 1)
-    } else if (this.autoRudder && sim.groundSpeed > GROUND_DAMPER_FROM) {
-      // Takeoff and landing runs: damp the swings, while the pedals still steer
-      const bite = (GROUND_DAMPER_SPEED / sim.groundSpeed) ** 2
-      const damper = clamp(-sim.turnRate * GROUND_DAMPER * Math.min(bite, 4), -1, 1)
-      c.yaw = clamp(this.pedal + this.rudderTrim + damper, -1, 1)
-      this.rudderHold = 0
+    } else if (autopilot.on && pedals === 0) {
+      // Yaw damper: the autopilot sets the rudder that balances uneven engines, as after an
+      // engine failure, and works it to centre the slip ball
+      // Both the slip it feels and the rudder's bite grow as the airspeed squared, so above
+      // manoeuvring speed the damper eases off. The thin air up high damps a swing less, so
+      // there it eases off too, and past Mach 1 the airframe holds itself straight. Without
+      // this the damper swings the tail side to side at speed or height.
+      const thin = sim.indicatedAirspeed / Math.max(sim.trueAirspeed, 1)
+      const supersonic = Math.min(1, Math.max(0, (sim.mach - 0.9) / 0.2))
+      const fast = Math.min(1, (spec.maneuverSpeed / Math.max(airspeed, 1)) ** 4)
+      const bite = fast * thin * thin * (1 - supersonic)
+      this.rudderHold = clamp(this.rudderHold + sim.slip * YAW_TRIM * bite * dt, -1, 1)
+      c.yaw = clamp(sim.balancingRudder + this.rudderHold + sim.slip * YAW_DAMPER * bite, -1, 1)
     } else {
-      c.yaw = clamp(this.pedal + this.rudderTrim, -1, 1)
+      c.yaw = this.deflect(c.yaw, pedals * fine, dt, DEFLECT_RATE, 'KeyD', 'KeyA')
       this.rudderHold = 0
     }
+    const trim = this.axis('KeyE', 'KeyQ')
+    // A helicopter's trim only holds a forward speed, from a hover (0) to its fastest (-1)
+    const most = spec.rotor ? 0 : 1
+    c.trim = clamp(c.trim + trim * TRIM_RATE * this.ramp('KeyE', 'KeyQ') * dt, -1, most)
     c.brake = this.held.has('Space') ? 1 : 0
     c.brakeLeft = this.held.has('Comma') ? 1 : 0
     c.brakeRight = this.held.has('Period') ? 1 : 0
@@ -823,25 +777,6 @@ export class Pilot {
     this.autopilot.verticalSpeed = 0
     // Telemetry lags a fresh placement, so read the speed from the velocity itself
     this.autothrottle.speed = sim.velocity.length()
-  }
-
-  /**
-   * Rudder from the yaw damper: the rudder that balances uneven engines, as after an engine
-   * failure, plus what centres the slip ball. While A or D is held, `damping` is false and
-   * the damper only balances the engines, so the pedals can slip the aircraft on purpose.
-   */
-  private yawDamper(dt: number, sim: FlightSim, damping: boolean) {
-    if (!damping) return sim.balancingRudder + this.rudderHold
-    // Both the slip it feels and the rudder's bite grow as the airspeed squared, so above
-    // manoeuvring speed the damper eases off. The thin air up high damps a swing less, so
-    // there it eases off too, and past Mach 1 the airframe holds itself straight. Without
-    // this the damper swings the tail side to side at speed or height.
-    const thin = sim.indicatedAirspeed / Math.max(sim.trueAirspeed, 1)
-    const supersonic = Math.min(1, Math.max(0, (sim.mach - 0.9) / 0.2))
-    const fast = Math.min(1, (sim.spec.maneuverSpeed / Math.max(sim.indicatedAirspeed, 1)) ** 4)
-    const bite = fast * thin * thin * (1 - supersonic)
-    this.rudderHold = clamp(this.rudderHold + sim.slip * YAW_TRIM * bite * dt, -1, 1)
-    return sim.balancingRudder + this.rudderHold + sim.slip * YAW_DAMPER * bite
   }
 
   private disengage() {
