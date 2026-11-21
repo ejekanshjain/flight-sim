@@ -14,7 +14,7 @@ import {
   RANGE,
   toStrip
 } from '../world/island'
-import { CITY_SLOTS, type Slot } from '../world/scenery'
+import { CITY_CROSS_SLOTS, CITY_SLOTS, type Slot } from '../world/scenery'
 import type { Bombs, Target } from './bombs'
 import {
   AIR_LOCK_RANGE,
@@ -64,6 +64,8 @@ export type Gate = {
 // A slot counts only with the wings banked between these, in radians
 const SLOT_BANK_MIN = (45 * Math.PI) / 180
 const SLOT_BANK_MAX = (135 * Math.PI) / 180
+// Only a pass within this many metres of a slot, sideways or up and down, is an attempt at it
+const SLOT_NEAR = 100
 
 /** What a mission can see while it runs. */
 export type MissionContext = {
@@ -400,7 +402,8 @@ const CITY_RUN: Gate[] = (() => {
   const city = CITIES[0]
   const avenue = CITY_RUN_AVENUE
   const low = 47
-  type Point = { x: number; y: number; z: number; radius: number; slot?: Slot }
+  // `slot` slots face the way they are flown, given by `heading`
+  type Point = { x: number; y: number; z: number; radius: number; slot?: Slot; heading?: number }
   const ring = (along: number, across: number, above: number, radius: number): Point => ({
     ...fromStrip(city, along, across),
     y: city.elevation + above,
@@ -410,21 +413,28 @@ const CITY_RUN: Gate[] = (() => {
   const slotAlong = CITY_SLOTS.map(slot => toStrip(city, slot.x, slot.z).along)
   const first = Math.max(...slotAlong)
   const last = Math.min(...slotAlong)
+  const cross = toStrip(city, CITY_CROSS_SLOTS[0].x, CITY_CROSS_SLOTS[0].z).along
   const points: Point[] = [
     ring(first + 2700, avenue, 220, 60),
     ring(first + 1800, avenue, 130, 45),
     ring(first + 1000, avenue, 70, 25),
     ring(first + 450, avenue, low, 22),
-    ...[...CITY_SLOTS].reverse().map(slot => ({ ...slot, radius: 0, slot })),
+    // Boulevard slots face east, and are flown west
+    ...[...CITY_SLOTS]
+      .reverse()
+      .map(slot => ({ ...slot, radius: 0, slot, heading: slot.heading + Math.PI })),
     ring(last - 600, avenue, 70, 25),
-    // Climb straight out, then turn north over the sea, clear of the hills west of the city,
-    // and back east over the skyline
+    // Climb straight out, then turn north over the sea, clear of the hills west of the city
     ring(last - 1500, avenue - 150, 300, 50),
     ring(last - 1800, avenue - 1700, 450, 60),
-    ring(last + 400, avenue - 2000, 540, 60),
-    ring(first, avenue - 300, 600, 70)
+    // No rings lead into the cross avenue: turn back and line up for it from the north
+    ...CITY_CROSS_SLOTS.map(slot => ({ ...slot, radius: 0, slot })),
+    // Out over the low ground south-west of the city, and back high over the skyline
+    ring(cross, avenue + 750, 150, 40),
+    ring(cross - 1200, avenue + 1300, 450, 60),
+    ring(first, avenue - 300, 620, 70)
   ]
-  return points.map(({ x, y, z, radius, slot }, i): Gate => {
+  return points.map(({ x, y, z, radius, slot, heading }, i): Gate => {
     // A ring faces halfway between the way in and the way out, so it reads square-on
     const next = points[Math.min(i + 1, points.length - 1)]
     const last = points[Math.max(i - 1, 0)]
@@ -436,8 +446,8 @@ const CITY_RUN: Gate[] = (() => {
       x,
       y,
       z,
-      // Slots face straight down the avenue, flown westward, whatever comes after them
-      heading: slot ? slot.heading + Math.PI : way,
+      // Slots face straight down their avenue, whatever comes after them
+      heading: slot ? (heading ?? slot.heading) : way,
       radius,
       slot: slot && { width: slot.width, height: slot.height }
     }
@@ -920,9 +930,10 @@ export const MISSIONS: Mission[] = [
     title: 'City Run',
     category: 'Speed Run',
     aircraft: 'f16',
-    summary: 'Race an F-16 down the avenue through Coral Bay, rolling on your side between towers.',
+    summary:
+      'Race an F-16 down two avenues through Coral Bay, rolling on your side between towers.',
     briefing:
-      'Come in from the sea and drop into the avenue that runs through downtown Coral Bay. Race along it between the skyscrapers. Three narrow slots hang between pairs of towers. Roll at least 45° onto your side as you pass through each one, then roll level before the next. Hold about 250 knots in the avenue so there is time between them. Then climb out and finish high over the skyline. You have 5 minutes.',
+      'Come in from the sea and drop into the avenue that runs through downtown Coral Bay. Race along it between the skyscrapers. Three narrow slots hang between pairs of towers. Roll at least 45° onto your side as you pass through each one, then roll level before the next. Hold about 250 knots in the avenue so there is time between them. Then climb out over the sea and line up by yourself for the avenue that crosses the city from north to south, with two more slots. Finish high over the skyline. You have 7 minutes.',
     start: {
       kind: 'air',
       x: CITY_RUN_START.x,
@@ -932,7 +943,7 @@ export const MISSIONS: Mission[] = [
       speed: 280
     },
     gates: CITY_RUN,
-    timeLimit: 300,
+    timeLimit: 420,
     objectives: [
       {
         text: 'Fly through the rings down into the avenue. Hold about 250 knots with [W] and [S].',
@@ -943,7 +954,15 @@ export const MISSIONS: Mission[] = [
         done: c => c.gates >= 4 + CITY_SLOTS.length
       },
       {
-        text: 'Stay low for the next ring, then climb out through the rings over the skyline.',
+        text: 'Stay low for the next ring, then climb out and turn north over the sea through two more.',
+        done: c => c.gates >= 4 + CITY_SLOTS.length + 3
+      },
+      {
+        text: 'No rings now: turn back toward the city and line up from the north with the avenue that crosses it. Drop low and take both slots on your side.',
+        done: c => c.gates >= 4 + CITY_SLOTS.length + 3 + CITY_CROSS_SLOTS.length
+      },
+      {
+        text: 'Climb out over the low ground to the south-west, then finish through the ring high over the skyline.',
         done: c => c.gates >= CITY_RUN.length
       }
     ],
@@ -2231,6 +2250,8 @@ export class MissionRunner {
     if (!crossed) return
     const across = dx * Math.cos(gate.heading) + dz * Math.sin(gate.heading)
     const up = sim.position.y - gate.y
+    // Crossing the slot's line far from it is lining up, not an attempt at it
+    if (Math.abs(across) > SLOT_NEAR || Math.abs(up) > SLOT_NEAR) return
     // Half a wingspan may stick out past the frame, so clipping its edge still counts
     const spare = sim.spec.wingSpan / 2
     if (Math.abs(across) > slot.width / 2 + spare || Math.abs(up) > slot.height / 2 + spare) {

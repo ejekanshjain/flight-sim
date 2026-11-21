@@ -224,8 +224,10 @@ const DOWNTOWN = 0.45
 // across and along it. The slot hangs between them, tall and narrow so it reads as one to fly
 // on the side, and starts this high above the street.
 const GATE_SETBACK = 4
-// Blocks along the city run's avenue step back this far, making it a wide boulevard
+// Blocks along the city run's avenues step back this far, making them wide boulevards
 const BOULEVARD = 15
+// The cross avenue's two pairs stand about this far either side of the boulevard
+const CROSS_REACH = 250
 const GATE_WIDTH = 24
 const GATE_DEPTH = 34
 const SLOT_FLOOR = 20
@@ -304,6 +306,7 @@ function buildCities() {
   const trees: ParkTree[] = []
   const houses: House[] = []
   let slots: Slot[] = []
+  let crossSlots: Slot[] = []
 
   for (const city of CITIES) {
     const style = CITY_STYLES[city.name] ?? CITY_STYLES['Coral Bay']
@@ -350,6 +353,9 @@ function buildCities() {
       Math.abs(block.along - grounds.along) * 2 < block.length + HOSPITAL_GROUNDS.length + 40 &&
       Math.abs(block.across - grounds.across) * 2 < block.width + HOSPITAL_GROUNDS.width + 40
     let avenue = 0
+    // Which avenue each gate tower faces: across the city for the boulevard, along it for the
+    // cross avenue, and where that avenue's middle line runs
+    const gateOf = new Map<CityBlock, { cross: boolean; line: number }>()
     if (city === CITIES[0]) {
       let nearest = Number.POSITIVE_INFINITY
       let sides: number[] = []
@@ -370,7 +376,8 @@ function buildCities() {
         block.across -= (toward * BOULEVARD) / 2
       }
       sides = sides.map(across => across - (Math.sign(avenue - across) * BOULEVARD) / 2)
-      const rows = [...new Set(blocks.map(block => block.along))].sort((a, b) => a - b)
+      let rows = [...new Set(blocks.map(block => block.along))].sort((a, b) => a - b)
+      const gateRows: number[] = []
       for (const offset of [-800, 0, 800]) {
         const wanted = core.along + offset
         const fits = rows.filter(row => {
@@ -381,8 +388,65 @@ function buildCities() {
           (best, along) => (Math.abs(along - wanted) < Math.abs(best - wanted) ? along : best),
           fits[0]
         )
+        gateRows.push(row)
         for (const block of blocks) {
-          if (block.along === row && sides.includes(block.across)) block.use = 'gateway'
+          if (block.along !== row || !sides.includes(block.across)) continue
+          block.use = 'gateway'
+          gateOf.set(block, { cross: false, line: avenue })
+        }
+      }
+      // The second set stands on the avenue that crosses the city between the two westernmost
+      // pairs, widened the same way, with a pair north and a pair south of the boulevard
+      const [west, middle] = gateRows.sort((a, b) => a - b)
+      const wantedCross = (west + middle) / 2
+      let cross = 0
+      let crossRows: number[] = []
+      for (let i = 1; i < rows.length; i++) {
+        const before = blocks.find(block => block.along === rows[i - 1])
+        const after = blocks.find(block => block.along === rows[i])
+        if (!before || !after) continue
+        const from = before.along + before.length / 2
+        const to = after.along - after.length / 2
+        const line = (from + to) / 2
+        if (
+          to - from < AVENUE - 1 ||
+          rows.slice(i - 1, i + 1).some(row => gateRows.includes(row))
+        ) {
+          continue
+        }
+        if (
+          crossRows.length === 0 ||
+          Math.abs(line - wantedCross) < Math.abs(cross - wantedCross)
+        ) {
+          cross = line
+          crossRows = [rows[i - 1], rows[i]]
+        }
+      }
+      for (const block of blocks) {
+        if (!crossRows.includes(block.along)) continue
+        const toward = Math.sign(cross - block.along)
+        block.length -= BOULEVARD
+        block.along -= (toward * BOULEVARD) / 2
+      }
+      crossRows = crossRows.map(along => along - (Math.sign(cross - along) * BOULEVARD) / 2)
+      rows = [...new Set(blocks.map(block => block.along))]
+      const columns = [...new Set(blocks.map(block => block.across))].filter(
+        across => !sides.includes(across)
+      )
+      for (const wanted of [avenue - CROSS_REACH, avenue + CROSS_REACH]) {
+        const fits = columns.filter(across =>
+          blocks
+            .filter(block => block.across === across && crossRows.includes(block.along))
+            .every(block => block !== heart && !underHospital(block))
+        )
+        const column = fits.reduce(
+          (best, across) => (Math.abs(across - wanted) < Math.abs(best - wanted) ? across : best),
+          fits[0]
+        )
+        for (const block of blocks) {
+          if (block.across !== column || !crossRows.includes(block.along)) continue
+          block.use = 'gateway'
+          gateOf.set(block, { cross: true, line: cross })
         }
       }
     }
@@ -530,18 +594,22 @@ function buildCities() {
       const ground = baseHeight(center.x, center.z, Math.max(block.length, block.width) / 2)
       const room = ceiling - ground
 
-      if (block.use === 'gateway') {
-        // A slim glass tower at the block's avenue edge, and open paving behind it
-        const toward = Math.sign(avenue - block.across)
-        const edge = block.across + (toward * block.width) / 2
-        const across = edge - toward * (GATE_SETBACK + GATE_WIDTH / 2)
+      const gate = gateOf.get(block)
+      if (gate) {
+        // A slim glass tower at the block's edge on the avenue it faces, and open paving
+        // behind it. Its narrow side faces the avenue.
+        const middle = gate.cross ? block.along : block.across
+        const size = gate.cross ? block.length : block.width
+        const toward = Math.sign(gate.line - middle)
+        const face = middle + (toward * size) / 2 - toward * (GATE_SETBACK + GATE_WIDTH / 2)
+        const [along, across] = gate.cross ? [face, block.across] : [block.along, face]
         const height = Math.min(between(180, 230), room - 12)
         const top = place(
-          block.along,
+          along,
           across,
           {
-            width: GATE_WIDTH,
-            depth: GATE_DEPTH,
+            width: gate.cross ? GATE_DEPTH : GATE_WIDTH,
+            depth: gate.cross ? GATE_WIDTH : GATE_DEPTH,
             height,
             glass: true,
             round: false,
@@ -549,19 +617,24 @@ function buildCities() {
           },
           ground
         )
-        const spot = fromStrip(city, block.along, across)
+        const spot = fromStrip(city, along, across)
         spires.push({ ...spot, y: top, height: 24, radius: 1.2 })
-        // The left tower of each pair sets the slot over the avenue
+        // One tower of each pair sets the slot over the avenue. Boulevard slots face east,
+        // along the city, and cross avenue slots south, across it.
         if (toward > 0) {
-          const middle = fromStrip(city, block.along, avenue)
-          slots.push({
-            x: middle.x,
+          const centre = gate.cross
+            ? fromStrip(city, gate.line, block.across)
+            : fromStrip(city, block.along, gate.line)
+          const slot = {
+            x: centre.x,
             y: ground + SLOT_FLOOR + SLOT_HEIGHT / 2,
-            z: middle.z,
-            heading: (city.heading * Math.PI) / 180,
+            z: centre.z,
+            heading: ((city.heading + (gate.cross ? 90 : 0)) * Math.PI) / 180,
             width: SLOT_WIDTH,
             height: SLOT_HEIGHT
-          })
+          }
+          if (gate.cross) crossSlots.push(slot)
+          else slots.push(slot)
         }
         continue
       }
@@ -742,7 +815,10 @@ function buildCities() {
   slots = slots.sort(
     (a, b) => toStrip(CITIES[0], a.x, a.z).along - toStrip(CITIES[0], b.x, b.z).along
   )
-  return { plans, towers, spires, crowns, trees, houses, slots }
+  crossSlots = crossSlots.sort(
+    (a, b) => toStrip(CITIES[0], a.x, a.z).across - toStrip(CITIES[0], b.x, b.z).across
+  )
+  return { plans, towers, spires, crowns, trees, houses, slots, crossSlots }
 }
 
 /** Walks inland along a compass bearing and returns the first point at least `minHeight` high. */
@@ -802,6 +878,8 @@ export const CROWNS = CITY.crowns
 export const PARK_TREES = CITY.trees
 /** Coral Bay's city run slots, in order along its avenue. */
 export const CITY_SLOTS = CITY.slots
+/** The city run's second set, on the avenue across Coral Bay, in order from north to south. */
+export const CITY_CROSS_SLOTS = CITY.crossSlots
 export const HOUSES = [...buildHouses(), ...CITY.houses]
 export const LIGHTHOUSE = findHeadland()
 export const SAILBOATS = seaRoutes(36, 700, 2600, [2, 4.5])

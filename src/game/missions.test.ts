@@ -1121,31 +1121,52 @@ test('a Concorde crew who presses X and Y above 3,000 ft climbs past Mach 1.7 in
   expect(result).toMatchObject({ passed: true })
 })
 
-test('the City Run avenue is clear down its middle, and each slot stands between two towers', () => {
+test('both City Run avenues are clear down the middle, with a tower each side of every slot', () => {
   const mission = MISSIONS.find(candidate => candidate.id === 'city-run')
   const gates = mission?.gates ?? []
   const slots = gates.filter(gate => gate.slot)
-  expect(slots).toHaveLength(3)
-  // Fly the middle of the avenue at slot height, from the ring before the slots to the ring after
-  const before = gates[gates.indexOf(slots[0]) - 1]
-  const after = gates[gates.indexOf(slots[2]) + 1]
+  expect(slots).toHaveLength(5)
   const sim = new FlightSim(ISLAND_GROUND, HANGAR.find(spec => spec.id === 'f16') ?? HANGAR[0])
   const traffic = new Traffic()
-  for (let share = 0; share <= 1; share += 0.002) {
-    const x = before.x + (after.x - before.x) * share
-    const z = before.z + (after.z - before.z) * share
-    sim.placeInAir(x, slots[0].y, z, slots[0].heading, 130)
-    sim.altitudeAgl = slots[0].y - heightAt(x, z)
-    expect(findCollision(sim, 0, traffic)).toBeNull()
+  const hits = (x: number, y: number, z: number, heading: number) => {
+    sim.placeInAir(x, y, z, heading, 130)
+    sim.altitudeAgl = y - heightAt(x, z)
+    return findCollision(sim, 0, traffic)
+  }
+  // Each avenue, at slot height, from 400 m before its first slot to 400 m past its last
+  for (const set of [slots.slice(0, 3), slots.slice(3)]) {
+    const { heading } = set[0]
+    const ahead = { x: Math.sin(heading), z: -Math.cos(heading) }
+    const from = set[0]
+    const to = set[set.length - 1]
+    const length = (to.x - from.x) * ahead.x + (to.z - from.z) * ahead.z
+    for (let along = -400; along <= length + 400; along += 4) {
+      const x = from.x + ahead.x * along
+      const z = from.z + ahead.z * along
+      expect(hits(x, from.y, z, heading)).toBeNull()
+    }
   }
   // A tower stands on each side of every slot, 45 m from its middle
   for (const slot of slots) {
     for (const side of [-1, 1]) {
       const x = slot.x + Math.cos(slot.heading) * side * 45
       const z = slot.z + Math.sin(slot.heading) * side * 45
-      sim.placeInAir(x, slot.y, z, slot.heading, 130)
-      sim.altitudeAgl = slot.y - heightAt(x, z)
-      expect(findCollision(sim, 0, traffic)).toBe('building')
+      expect(hits(x, slot.y, z, slot.heading)).toBe('building')
+    }
+  }
+  // Flying straight from gate to gate clears everything, except the leg where the pilot lines
+  // up for the cross avenue alone
+  const lineUp = gates.indexOf(slots[3])
+  for (let i = 1; i < gates.length; i++) {
+    if (i === lineUp) continue
+    const [a, b] = [gates[i - 1], gates[i]]
+    const heading = Math.atan2(b.x - a.x, -(b.z - a.z))
+    for (let share = 0; share <= 1; share += 0.01) {
+      const x = a.x + (b.x - a.x) * share
+      const z = a.z + (b.z - a.z) * share
+      const y = a.y + (b.y - a.y) * share
+      expect(Math.max(heightAt(x, z), 0)).toBeLessThan(y - 20)
+      expect(hits(x, y, z, heading)).toBeNull()
     }
   }
 })
