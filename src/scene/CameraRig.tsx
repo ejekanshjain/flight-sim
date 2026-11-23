@@ -38,10 +38,6 @@ const HOVER_LOOK_DOWN = 0.38
 // turns over the top
 const ORBIT_LOWEST = -1.3
 const ORBIT_HIGHEST = 1.45
-// Once the camera has circled this far, in radians, it looks at the aircraft itself rather
-// than past its nose, so the aircraft stays in the middle of the view
-const CENTRE_FROM = 0.05
-const CENTRE_BY = 0.5
 // Pixels per line and per page of wheel scroll, for mice that scroll by lines
 const WHEEL_LINE = 33
 const WHEEL_PAGE = 800
@@ -53,6 +49,7 @@ const ahead = new Vector3()
 const below = new Vector3()
 const offset = new Vector3()
 const runway = new Vector3()
+const subject = new Vector3()
 const inverse = new Quaternion()
 
 const viewers = new Set<(camera: PerspectiveCamera) => void>()
@@ -198,6 +195,22 @@ export function CameraRig() {
       const back = view.distance * (1 - hover * HOVER_PULL) * look.distance
       offset.copy(trail.current).multiplyScalar(-back)
       offset.y += (view.height + hover * HOVER_RISE) * look.distance
+      target
+        .copy(sim.position)
+        .addScaledVector(trail.current, view.distance * look.distance * CHASE_LOOK_AHEAD)
+      target.y += 1
+      // A slow helicopter's camera looks down at the pad or ground under it instead
+      if (hover > 0.001) {
+        below.copy(sim.position)
+        below.y -= Math.min(Math.max(sim.altitudeAgl, 0), HOVER_LOOK_DROP)
+        target.lerp(below, hover)
+      }
+      subject.copy(sim.position)
+      subject.y += 1
+      // How far above the aircraft the normal view aims, in radians. The camera, the aircraft
+      // and the point it aims at all lie in one upright plane, so this is the whole difference.
+      aim.copy(sim.position).add(offset)
+      const lift = elevation(aim, target) - elevation(aim, subject)
       // Dragging circles the camera round the aircraft, and up over it or down below it
       if (look.yaw !== 0 || look.pitch !== 0) {
         const reach = offset.length()
@@ -214,25 +227,11 @@ export function CameraRig() {
       }
       camera.position.copy(sim.position).add(offset)
       keepAboveGround(camera.position, 1.2)
-      target
-        .copy(sim.position)
-        .addScaledVector(trail.current, view.distance * look.distance * CHASE_LOOK_AHEAD)
-      target.y += 1
-      // A slow helicopter's camera looks down at the pad or ground under it instead
-      if (hover > 0.001) {
-        below.copy(sim.position)
-        below.y -= Math.min(Math.max(sim.altitudeAgl, 0), HOVER_LOOK_DROP)
-        target.lerp(below, hover)
-      }
-      // Circled round to the side or above, the camera looks at the aircraft itself
-      const circled = smoothstep(
-        CENTRE_FROM,
-        CENTRE_BY,
-        Math.max(Math.abs(look.yaw), Math.abs(look.pitch))
-      )
-      if (circled > 0) target.lerp(below.copy(sim.position).setY(sim.position.y + 1), circled)
+      // As the camera circles, the aircraft holds its place on screen, as in the normal view:
+      // aim at it, then tilt up by as much as the normal view aims above it
       camera.up.set(0, 1, 0)
-      camera.lookAt(target)
+      camera.lookAt(subject)
+      camera.rotateX(lift)
     }
 
     // The blast of a crash shakes the view
@@ -311,6 +310,11 @@ function useLookControls() {
       canvas.removeEventListener('wheel', wheel)
     }
   }, [canvas])
+}
+
+/** Radians above level that `to` lies, seen from `from`. */
+function elevation(from: Vector3, to: Vector3) {
+  return Math.atan2(to.y - from.y, Math.hypot(to.x - from.x, to.z - from.z))
 }
 
 function keepAboveGround(position: Vector3, clearance: number) {
