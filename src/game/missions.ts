@@ -1,3 +1,4 @@
+import { KNOT } from '../sim/aircraft'
 import type { Controls, FlightSim } from '../sim/flight-sim'
 import { APPROACHES, onCentreline } from '../world/approaches'
 import {
@@ -10,8 +11,10 @@ import {
   helipad,
   isPaved,
   outside,
-  RANGE
+  RANGE,
+  toStrip
 } from '../world/island'
+import { CITY_CROSS_SLOTS, CITY_SLOTS, type Slot } from '../world/scenery'
 import type { Bombs, Target } from './bombs'
 import {
   AIR_LOCK_RANGE,
@@ -45,8 +48,24 @@ export const MISSION_CATEGORIES: MissionCategory[] = [
   'Helicopter'
 ]
 
-/** A ring to fly through, in order. Heading is in radians. */
-export type Gate = { x: number; y: number; z: number; heading: number; radius: number }
+/**
+ * A ring to fly through, in order. Heading is in radians. A gate with `slot` is an upright
+ * frame that size instead, flown through banked on its side.
+ */
+export type Gate = {
+  x: number
+  y: number
+  z: number
+  heading: number
+  radius: number
+  slot?: { width: number; height: number }
+}
+
+// A slot counts only with the wings banked between these, in radians
+const SLOT_BANK_MIN = (45 * Math.PI) / 180
+const SLOT_BANK_MAX = (135 * Math.PI) / 180
+// Only a pass within this many metres of a slot, sideways or up and down, is an attempt at it
+const SLOT_NEAR = 100
 
 /** What a mission can see while it runs. */
 export type MissionContext = {
@@ -70,6 +89,8 @@ export type MissionContext = {
   combat?: AirCombat
   /** Survivors winched aboard so far, on rescue missions. */
   aboard: number
+  /** How the last slot gate went wrong: flown through too level, or past its frame. */
+  missedSlot: 'level' | 'outside' | null
 }
 
 /**
@@ -265,6 +286,10 @@ function gatesThrough(points: [number, number][], clearance: number, radius: num
   })
 }
 
+/** Smallest signed angle from `from` to `to`, in radians. */
+const turnBetween = (from: number, to: number) =>
+  Math.atan2(Math.sin(to - from), Math.cos(to - from))
+
 /** Points on a circle, starting due north and going clockwise. */
 const circle = (x: number, z: number, radius: number, count: number): [number, number][] =>
   Array.from({ length: count + 1 }, (_, i) => {
@@ -365,6 +390,74 @@ const startup = (engines: number): Objective[] => [
 ]
 
 const ISLAND_RING = gatesThrough(circle(500, 500, 12_500, 8), 140, 90)
+
+/**
+ * Coral Bay's city run, in the city's own axes, which run east along its length. In from the
+ * sea to the east, rings lead down into the avenue through downtown, then the three slots
+ * between its gate towers, flown westward, and one more ring low in the avenue. Rings then
+ * climb out over the sea to the north and back over the skyline. Heights are above the city.
+ */
+const CITY_RUN_AVENUE = toStrip(CITIES[0], CITY_SLOTS[0].x, CITY_SLOTS[0].z).across
+const CITY_RUN: Gate[] = (() => {
+  const city = CITIES[0]
+  const avenue = CITY_RUN_AVENUE
+  const low = 47
+  // `slot` slots face the way they are flown, given by `heading`
+  type Point = { x: number; y: number; z: number; radius: number; slot?: Slot; heading?: number }
+  const ring = (along: number, across: number, above: number, radius: number): Point => ({
+    ...fromStrip(city, along, across),
+    y: city.elevation + above,
+    radius
+  })
+  // The slots run east to west, with a ring in the avenue on either side of them
+  const slotAlong = CITY_SLOTS.map(slot => toStrip(city, slot.x, slot.z).along)
+  const first = Math.max(...slotAlong)
+  const last = Math.min(...slotAlong)
+  const cross = toStrip(city, CITY_CROSS_SLOTS[0].x, CITY_CROSS_SLOTS[0].z).along
+  const points: Point[] = [
+    ring(first + 2700, avenue, 220, 60),
+    ring(first + 1800, avenue, 130, 45),
+    ring(first + 1000, avenue, 70, 25),
+    ring(first + 450, avenue, low, 22),
+    // Boulevard slots face east, and are flown west
+    ...[...CITY_SLOTS]
+      .reverse()
+      .map(slot => ({ ...slot, radius: 0, slot, heading: slot.heading + Math.PI })),
+    ring(last - 600, avenue, 70, 25),
+    // Climb straight out, then turn north over the sea, clear of the hills west of the city
+    ring(last - 1500, avenue - 150, 300, 50),
+    ring(last - 1800, avenue - 1700, 450, 60),
+    // No rings lead into the cross avenue: turn back and line up for it from the north
+    ...CITY_CROSS_SLOTS.map(slot => ({ ...slot, radius: 0, slot })),
+    // Out over the low ground south-west of the city, and back high over the skyline
+    ring(cross, avenue + 750, 150, 40),
+    ring(cross - 1200, avenue + 1300, 450, 60),
+    ring(first, avenue - 300, 620, 70)
+  ]
+  return points.map(({ x, y, z, radius, slot, heading }, i): Gate => {
+    // A ring faces halfway between the way in and the way out, so it reads square-on
+    const next = points[Math.min(i + 1, points.length - 1)]
+    const last = points[Math.max(i - 1, 0)]
+    const inward = i > 0 ? Math.atan2(x - last.x, -(z - last.z)) : null
+    const outward = i + 1 < points.length ? Math.atan2(next.x - x, -(next.z - z)) : null
+    const way =
+      (inward ?? outward ?? 0) + turnBetween(inward ?? outward ?? 0, outward ?? inward ?? 0) / 2
+    return {
+      x,
+      y,
+      z,
+      // Slots face straight down their avenue, whatever comes after them
+      heading: slot ? (heading ?? slot.heading) : way,
+      radius,
+      slot: slot && { width: slot.width, height: slot.height }
+    }
+  })
+})()
+const CITY_RUN_START = fromStrip(
+  CITIES[0],
+  Math.max(...CITY_SLOTS.map(slot => toStrip(CITIES[0], slot.x, slot.z).along)) + 3900,
+  CITY_RUN_AVENUE
+)
 
 /** A target on the bombing range, by its distance east and south of the range's centre. */
 const rangeTarget = (
@@ -829,6 +922,59 @@ export const MISSIONS: Mission[] = [
       {
         text: `Fly through all ${ISLAND_RING.length} gates in order. The next one glows green.`,
         done: c => c.gates >= ISLAND_RING.length
+      }
+    ]
+  },
+  {
+    id: 'city-run',
+    title: 'City Run',
+    category: 'Speed Run',
+    aircraft: 'f16',
+    summary:
+      'Race an F-16 down two avenues through Coral Bay, rolling on your side between towers.',
+    briefing:
+      'Come in from the sea and drop into the avenue that runs through downtown Coral Bay. Race along it between the skyscrapers. Three narrow slots hang between pairs of towers. Roll at least 45° onto your side as you pass through each one, then roll level before the next. Hold about 250 knots in the avenue so there is time between them. Then climb out over the sea and line up by yourself for the avenue that crosses the city from north to south, with two more slots. Finish high over the skyline. You have 7 minutes.',
+    start: {
+      kind: 'air',
+      x: CITY_RUN_START.x,
+      z: CITY_RUN_START.z,
+      altitude: CITIES[0].elevation + 280,
+      heading: (CITIES[0].heading + 180) % 360,
+      speed: 280
+    },
+    gates: CITY_RUN,
+    timeLimit: 420,
+    objectives: [
+      {
+        text: 'Fly through the rings down into the avenue. Hold about 250 knots with [W] and [S].',
+        done: c => c.gates >= 4
+      },
+      {
+        text: 'Roll onto your side with [←] or [→] for each slot, past 45°. Roll level between them.',
+        done: c => c.gates >= 4 + CITY_SLOTS.length
+      },
+      {
+        text: 'Stay low for the next ring, then climb out and turn north over the sea through two more.',
+        done: c => c.gates >= 4 + CITY_SLOTS.length + 3
+      },
+      {
+        text: 'No rings now: turn back toward the city and line up from the north with the avenue that crosses it. Drop low and take both slots on your side.',
+        done: c => c.gates >= 4 + CITY_SLOTS.length + 3 + CITY_CROSS_SLOTS.length
+      },
+      {
+        text: 'Climb out over the low ground to the south-west, then finish through the ring high over the skyline.',
+        done: c => c.gates >= CITY_RUN.length
+      }
+    ],
+    failures: [
+      {
+        reason:
+          'You went through a slot too level. Roll at least 45° onto your side as you pass through.',
+        failed: c => c.missedSlot === 'level'
+      },
+      {
+        reason: 'You missed a slot. Line up with the middle of the avenue, between the two towers.',
+        failed: c => c.missedSlot === 'outside'
       }
     ]
   },
@@ -1308,9 +1454,15 @@ export const MISSIONS: Mission[] = [
     aircraft: 'concorde',
     summary: 'Take Concorde through the sound barrier to Mach 1.7.',
     briefing:
-      'Concorde waits on the runway at Coral Bay with power on. Take off with the afterburners and climb high before going fast: low down, the air is too thick and the airframe overspeeds. You have 30 minutes.',
+      'Concorde waits on the runway at Coral Bay with power on. Take off with the afterburners, then climb at 400 knots, no faster. Low down the air is thick, and past the red-and-black band on the speed scale the airframe breaks up. Climbing at a steady 400 knots takes you past Mach 1 near 27,000 ft and Mach 1.7 above 50,000 ft. The autopilot panel is already set for that climb. You have 30 minutes.',
     start: { kind: 'runway', airport: 'CBI' },
     timeLimit: 1800,
+    // Sets the autopilot panel for the climb: 400 knots, up to 60,000 ft
+    script: c => {
+      if (!c.sim.onGround) return
+      c.pilot.autothrottle.speed = 400 * KNOT
+      c.pilot.autopilot.altitude = 60_000 * FEET
+    },
     objectives: [
       ...startup(4).slice(2),
       {
@@ -1326,12 +1478,32 @@ export const MISSIONS: Mission[] = [
         done: c => !c.controls.gearDown && c.controls.flapNotch === 0
       },
       {
-        text: 'Climb at full throttle. Keep the speed below the red-and-black band on the speed scale.',
+        text: 'Above 3,000 ft, press [X] for the autothrottle, then [Y] for level change. The autopilot climbs at 400 knots to 60,000 ft.',
+        done: c =>
+          (c.pilot.autopilot.on && c.pilot.autothrottle.on) || c.sim.position.y > 10_000 * FEET
+      },
+      {
+        text: 'Climb at 400 knots. Flying by hand, raise the nose with [↓] whenever the speed passes 400.',
         done: c => c.sim.position.y > 20_000 * FEET
       },
-      { text: 'Break the sound barrier: pass Mach 1.', done: c => c.sim.mach > 1 },
-      { text: 'Climb above 50,000 ft.', done: c => c.sim.position.y > 50_000 * FEET },
-      { text: 'Accelerate past Mach 1.7.', done: c => c.sim.mach > 1.7 }
+      {
+        text: 'Keep climbing at 400 knots. Mach 1 comes near 27,000 ft.',
+        done: c => c.sim.mach > 1
+      },
+      {
+        text: 'Keep climbing at 400 knots, above 50,000 ft.',
+        done: c => c.sim.position.y > 50_000 * FEET
+      },
+      { text: 'Keep climbing at 400 knots until you pass Mach 1.7.', done: c => c.sim.mach > 1.7 }
+    ],
+    failures: [
+      {
+        reason:
+          'You flew past the speed limit for too long. Climb at 400 knots: press [X] and [Y] for the autopilot, or raise the nose.',
+        failed: c => c.sim.indicatedAirspeed > c.sim.speedLimit,
+        grace: 30,
+        warning: () => 'Overspeed! Raise the nose with [↓] or pull the power back with [S].'
+      }
     ]
   },
   {
@@ -2037,6 +2209,9 @@ export class MissionRunner {
   private touchdown: MissionContext['touchdown'] = null
   private wasOnGround = true
   private lastSink = 0
+  /** Metres past the next gate along its heading, to see a slot being crossed. */
+  private lastAlong: number | null = null
+  private missedSlot: MissionContext['missedSlot'] = null
 
   start(mission: Mission, sim: FlightSim) {
     this.mission = mission
@@ -2051,11 +2226,45 @@ export class MissionRunner {
     this.touchdown = null
     this.wasOnGround = sim.onGround || sim.altitudeAgl < 3
     this.lastSink = 0
+    this.lastAlong = null
+    this.missedSlot = null
     origin = { x: sim.position.x, z: sim.position.z }
   }
 
   stop() {
     this.mission = null
+  }
+
+  /**
+   * Counts a slot gate once the aircraft crosses its plane inside the frame, banked on its
+   * side. Crossing it any other way notes what went wrong.
+   */
+  private crossSlot(sim: FlightSim, gate: Gate, slot: { width: number; height: number }) {
+    const dx = sim.position.x - gate.x
+    const dz = sim.position.z - gate.z
+    // Forward along the heading, which runs clockwise from north (-z), and right across it
+    const along = dx * Math.sin(gate.heading) - dz * Math.cos(gate.heading)
+    const crossed = this.lastAlong !== null && this.lastAlong < 0 && along >= 0
+    // Only a crossing near the frame counts as an attempt; far away it is a wrong turn
+    this.lastAlong = Math.abs(along) < 200 ? along : null
+    if (!crossed) return
+    const across = dx * Math.cos(gate.heading) + dz * Math.sin(gate.heading)
+    const up = sim.position.y - gate.y
+    // Crossing the slot's line far from it is lining up, not an attempt at it
+    if (Math.abs(across) > SLOT_NEAR || Math.abs(up) > SLOT_NEAR) return
+    // Half a wingspan may stick out past the frame, so clipping its edge still counts
+    const spare = sim.spec.wingSpan / 2
+    if (Math.abs(across) > slot.width / 2 + spare || Math.abs(up) > slot.height / 2 + spare) {
+      this.missedSlot = 'outside'
+      return
+    }
+    const bank = Math.abs(sim.bank)
+    if (bank < SLOT_BANK_MIN || bank > SLOT_BANK_MAX) {
+      this.missedSlot = 'level'
+      return
+    }
+    this.gates++
+    this.lastAlong = null
   }
 
   /** Where the step being worked on leads, or null. */
@@ -2070,7 +2279,7 @@ export class MissionRunner {
   /** Advances by `dt` seconds. Returns the result once the mission is decided. */
   update(
     dt: number,
-    context: Omit<MissionContext, 'time' | 'gates' | 'touchdown' | 'aboard'>
+    context: Omit<MissionContext, 'time' | 'gates' | 'touchdown' | 'aboard' | 'missedSlot'>
   ): MissionResult | null {
     const { mission } = this
     if (!mission) return null
@@ -2083,7 +2292,8 @@ export class MissionRunner {
     this.wasOnGround = sim.onGround
     if (!sim.onGround) this.lastSink = Math.max(0, -sim.verticalSpeed)
     const gate = mission.gates?.[this.gates]
-    if (gate) {
+    if (gate?.slot) this.crossSlot(sim, gate, gate.slot)
+    else if (gate) {
       const distance = Math.hypot(
         sim.position.x - gate.x,
         sim.position.y - gate.y,
@@ -2106,7 +2316,8 @@ export class MissionRunner {
       time: this.time,
       gates: this.gates,
       touchdown: this.touchdown,
-      aboard: this.aboard
+      aboard: this.aboard,
+      missedSlot: this.missedSlot
     }
     mission.script?.(full)
     this.warning = null

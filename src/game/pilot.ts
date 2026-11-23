@@ -30,6 +30,8 @@ const ALTITUDE_RATE = 60
 const SPEED_RATE = 8
 const VERTICAL_SPEED_RATE = 2.5
 const AUTOPILOT_BANK = 0.44
+// Level change takes the climb power off this many m/s past the speed knob
+const LEVEL_CHANGE_MARGIN = 5
 // Fly-by-wire jets up to this mass in kg get the autopilot's full slow pitch correction
 const RESPONSE_MASS = 80_000
 // Yaw damper rudder per radian of slip, and per radian-second of slip it builds up
@@ -697,7 +699,9 @@ export class Pilot {
       const up = this.autopilot.altitude > sim.position.y
       const climbPower =
         spec.engine.type === 'jet' ? Math.min(0.95, spec.engine.afterburnerFrom) : 1
-      c.throttle = approach(c.throttle, up ? climbPower : 0, 0.3 * dt)
+      // A powerful jet low down outruns the steepest climb, so past the knob the power comes off
+      const fast = airspeed > target.speed + LEVEL_CHANGE_MARGIN
+      c.throttle = approach(c.throttle, up && !fast ? climbPower : 0, 0.3 * dt)
       this.throttleTrim = c.throttle
       return
     }

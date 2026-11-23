@@ -6,6 +6,8 @@ import { APPROACHES, onCentreline, pathAltitude } from '../world/approaches'
 import {
   AIRPORTS,
   type Airport,
+  FUEL_REACH,
+  FUEL_STANDS,
   fromStrip,
   HELIPADS,
   heightAt,
@@ -113,6 +115,8 @@ const SIGHT_LINGER = 2.5
 const spot = new Vector3()
 // Longest physics step in seconds. Longer frames are split into several steps.
 const MAX_STEP = 1 / 120
+// A fuel truck fills this share of a full tank each second
+const REFUEL_RATE = 0.05
 // Seconds between puffs of a rescue boat's distress smoke
 const DISTRESS_GAP = 0.25
 // Seconds the crash plays before the menu appears
@@ -164,6 +168,8 @@ class Game {
   sceneryTime = 0
   /** Rendered frames per second, smoothed. */
   frameRate = 60
+  /** True while the tanks fill on a fuel stand. */
+  refuelling = false
   readonly effects = new Effects()
   readonly wreck = new Wreck()
   readonly traffic = new Traffic()
@@ -559,6 +565,7 @@ class Game {
         this.gpws.update(dt, this.sim, this.pilot.controls, this.nav)
         if (this.effects.emitFlight(dt, this.sim, ISLAND_GROUND)) this.sound.chirp()
         this.burnEngines(dt)
+        this.refuel(dt)
         this.trackFlight()
         this.dropString(dt)
         for (const impact of this.bombs.update(dt, this.sim, ISLAND_GROUND)) this.blast(impact)
@@ -804,6 +811,18 @@ class Game {
    * Flames and smoke from each burning engine, sparks under a belly landing, and spray while
    * a ditched aircraft slides to a stop on the sea.
    */
+  /** Stopped on a fuel stand with the parking brake set, the tanks fill up. */
+  private refuel(dt: number) {
+    const { sim } = this
+    const { fuelCapacity } = sim.spec
+    const parked = sim.onGround && sim.groundSpeed < 0.5 && this.pilot.controls.parkingBrake
+    const near = (stand: (typeof FUEL_STANDS)[number]) =>
+      Math.hypot(stand.x - sim.position.x, stand.z - sim.position.z) < FUEL_REACH
+    this.refuelling = parked && sim.fuel < fuelCapacity && FUEL_STANDS.some(near)
+    if (this.refuelling)
+      sim.fuel = Math.min(fuelCapacity, sim.fuel + fuelCapacity * REFUEL_RATE * dt)
+  }
+
   private burnEngines(dt: number) {
     const { sim } = this
     const spots = engineSpots(sim.spec)

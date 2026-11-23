@@ -825,6 +825,34 @@ export const HELIPADS: Helipad[] = [
   ...AIRPORTS.map(airportPad)
 ]
 
+/**
+ * A place to refuel: a stand with a fuel truck beside it. `heading` is in radians, as for a
+ * stand, and the truck parks `aside` metres to the right of it.
+ */
+export type FuelStand = { airport: string; x: number; z: number; heading: number; aside: number }
+
+/** Stop within this many metres of a fuel stand, with the parking brake set, to refuel. */
+export const FUEL_REACH = 15
+
+/**
+ * Every airport refuels at the stands its aircraft start from: the middle terminal gate for
+ * airliners, the middle hangar stand for everything else, and its helipad.
+ */
+export const FUEL_STANDS: FuelStand[] = AIRPORTS.flatMap(airport => {
+  const middle = (stands: Stand[]) => stands[Math.floor(stands.length / 2)]
+  const stands: FuelStand[] = []
+  const gate = airport.kind === 'airstrip' ? undefined : middle(airport.gates)
+  if (gate) stands.push({ airport: airport.code, ...gate, aside: 30 })
+  const ramp = middle(airport.ramps)
+  if (ramp) stands.push({ airport: airport.code, ...ramp, aside: 14 })
+  const pad = HELIPADS.find(candidate => candidate.airport === airport.code)
+  if (pad) {
+    const heading = (pad.heading * Math.PI) / 180
+    stands.push({ airport: airport.code, x: pad.x, z: pad.z, heading, aside: pad.radius + 6 })
+  }
+  return stands
+})
+
 /** The helipad with this id. Throws for an id that names no pad. */
 export function helipad(id: HelipadId) {
   const pad = HELIPADS.find(candidate => candidate.id === id)

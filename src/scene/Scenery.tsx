@@ -430,8 +430,34 @@ export function Birds() {
 }
 
 // Concrete tints and glass tints. The last of each is the plain grey of rooftop plant rooms.
-const FACADES = ['#d8d4c8', '#c4c9cc', '#b9b2a4', '#e6e3da', '#aab4bd', '#c9bfae', '#9a9c9e']
-const GLASS = ['#8fb3d1', '#9cc0b8', '#b8a88a', '#c3cbd3', '#7d95b0', '#a9b9c9', '#9a9c9e']
+// Index 6 is the grey of roof plant. After it: brick, brown stone, charcoal, and limestone
+// facades, and green, gold, smoked, and sky-blue glass.
+const FACADES = [
+  '#d8d4c8',
+  '#c4c9cc',
+  '#b9b2a4',
+  '#e6e3da',
+  '#aab4bd',
+  '#c9bfae',
+  '#9a9c9e',
+  '#a8695a',
+  '#8c7462',
+  '#646d75',
+  '#e2d3b3'
+]
+const GLASS = [
+  '#8fb3d1',
+  '#9cc0b8',
+  '#b8a88a',
+  '#c3cbd3',
+  '#7d95b0',
+  '#a9b9c9',
+  '#9a9c9e',
+  '#78a493',
+  '#c9ae6c',
+  '#5f7286',
+  '#9fbbdc'
+]
 // One facade texture covers four window bays across and four floors up
 const BAY = 3.5
 const FLOOR = 3.6
@@ -754,7 +780,8 @@ function streetTexture(plan: (typeof CITY_PLANS)[number]) {
     houses: '#6b7a4c',
     park: '#557a38',
     plaza: '#c2b9a6',
-    hospital: '#a9aba4'
+    hospital: '#a9aba4',
+    gateway: '#c2b9a6'
   }
   for (const block of blocks) {
     ctx.fillStyle = '#9d9d95'

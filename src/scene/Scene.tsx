@@ -6,6 +6,7 @@ import { Airports } from './Airports'
 import { FOG_DENSITY, HORIZON_COLOR } from './atmosphere'
 import { Bombing } from './Bombing'
 import { CameraRig } from './CameraRig'
+import { CityStreets } from './CityStreets'
 import { Effects } from './Effects'
 import { Glow } from './Glow'
 import { Helipads } from './Helipads'
@@ -63,6 +64,7 @@ export function Scene() {
       <Trees />
       <Villages />
       <Cities />
+      <CityStreets />
       <Helipads />
       <Roads />
       <Lighthouse />

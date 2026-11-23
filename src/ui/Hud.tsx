@@ -159,6 +159,7 @@ const LAMPS: Lamp[] = [
   { label: 'ENGINE OFF', kind: 'notice', on: sim => sim.enginesRunning < sim.spec.engineCount },
   { label: 'LOW FUEL', kind: 'notice', on: sim => sim.fuel < sim.spec.fuelCapacity * 0.15 },
   { label: 'FUEL DUMP', kind: 'notice', on: sim => sim.dumping },
+  { label: 'REFUELLING', kind: 'notice', on: () => game.refuelling },
   {
     label: 'BRAKE',
     kind: 'notice',

@@ -101,7 +101,8 @@ describe.each(PLANES)('$name', spec => {
     const sim = parked(spec)
     const c = controls({ throttle: 1, flapNotch: airliner(spec) ? 2 : 0 })
     let liftoffDistance = 0
-    run(sim, c, 60, () => {
+    // Heavy jets with a full start's fuel take a minute and a half to get well clear
+    run(sim, c, 90, () => {
       if (sim.indicatedAirspeed > spec.rotateSpeed * KNOT) holdAttitude(sim, c, 0.15)
       // Counter the propeller's left pull with rudder
       c.yaw = clamp(-Math.sin(sim.heading) * 4)
@@ -112,7 +113,8 @@ describe.each(PLANES)('$name', spec => {
     })
     expect(sim.crash).toBeNull()
     expect(liftoffDistance).toBeGreaterThan(100)
-    expect(liftoffDistance).toBeLessThan(airliner(spec) ? 2200 : 1000)
+    // Lifts off within the shortest runway the aircraft may use, with a full start's fuel
+    expect(liftoffDistance).toBeLessThan(spec.runwayNeeded)
     expect(sim.altitudeAgl).toBeGreaterThan(50)
   })
 

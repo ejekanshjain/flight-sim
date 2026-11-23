@@ -85,7 +85,7 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
       [['R'], 'Reverse thrust, on the ground or in the air'],
       [['Space'], 'Wheel brakes while held. In the air in a fight, drop flares'],
       [[',', '.'], 'Left or right brake, to turn tightly on the ground'],
-      [['P'], 'Parking brake'],
+      [['P'], 'Parking brake. Set it by a fuel truck at any airport to refuel'],
       [['L'], 'Landing lights'],
       [['-'], 'Dump fuel to land lighter: 787, A380, Concorde, and F-35A'],
       [['Tab'], 'B-2: open or close the bombsight'],
