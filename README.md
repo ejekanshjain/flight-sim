@@ -15,6 +15,7 @@ A friend has built a VR version of the game. Play it at [flight-sim-vr.vercel.ap
 - **Fly over living cities:** five cities with their own look, skyscraper downtowns, traffic in the streets, and red beacons on the tall towers at night.
 - **Take on missions:** 37 missions in eight groups, from step-by-step tutorials to dogfights and sea rescues.
 - **Set the conditions:** calm, light, or strong wind. Clear, cloudy, rain, fog, or storm weather. Morning, noon, evening, or night.
+- **Look around:** drag the mouse to circle the aircraft or turn your head in the cockpit, and lock the view on the runway for the turn onto final.
 - **Take pictures:** photo mode freezes the flight, hides the panels, and gives you a free camera.
 
 ## The Aircraft
@@ -63,20 +64,24 @@ The cockpit has working gauges, an autopilot with heading, navigation, level cha
 
 These are the main keys. The menu lists every control under **Controls**.
 
-| Keys       | Plane                              | Helicopter                             |
-| ---------- | ---------------------------------- | -------------------------------------- |
-| Arrow keys | Pitch and roll                     | Tilt to fly forward, back, or sideways |
-| W and S    | Throttle                           | Climb and descend                      |
-| A and D    | Rudder                             | Turn on the spot                       |
-| Q and E    | Trim                               | Set a speed to hold, down to a hover   |
-| O, U, I    | Battery, fuel pumps, engines       | Battery, fuel pumps, engines           |
-| F and V    | Flaps                              |                                        |
-| G          | Landing gear                       |                                        |
-| Z          | Autopilot                          | Autopilot                              |
-| T          | Let the autopilot fly the approach |                                        |
-| C          | Chase or cockpit view              | Chase or cockpit view                  |
-| M          | Enlarge or hide the map            | Enlarge or hide the map                |
-| Esc        | Pause                              | Pause                                  |
+| Keys         | Plane                                                              | Helicopter                             |
+| ------------ | ------------------------------------------------------------------ | -------------------------------------- |
+| Arrow keys   | Pitch and roll                                                     | Tilt to fly forward, back, or sideways |
+| W and S      | Throttle                                                           | Climb and descend                      |
+| A and D      | Rudder                                                             | Turn on the spot                       |
+| Q and E      | Trim                                                               | Set a speed to hold, down to a hover   |
+| O, U, I      | Battery, fuel pumps, engines                                       | Battery, fuel pumps, engines           |
+| F and V      | Flaps                                                              |                                        |
+| G            | Landing gear                                                       |                                        |
+| Z            | Autopilot                                                          | Autopilot                              |
+| T            | Let the autopilot fly the approach                                 |                                        |
+| C            | Chase or cockpit view                                              | Chase or cockpit view                  |
+| Mouse drag   | Look around: circle the aircraft, or turn your head in the cockpit | Look around                            |
+| Mouse wheel  | Zoom the view                                                      | Zoom the view                          |
+| Double-click | Look ahead again                                                   | Look ahead again                       |
+| /            | Keep the view on the runway                                        | Keep the view on the runway            |
+| M            | Enlarge or hide the map                                            | Enlarge or hide the map                |
+| Esc          | Pause                                                              | Pause                                  |
 
 ## Run It Locally
 
