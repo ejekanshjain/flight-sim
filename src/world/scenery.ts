@@ -1,3 +1,4 @@
+import { SITE_CRANE } from './demolition'
 import {
   AIRPORTS,
   CITIES,
@@ -36,6 +37,8 @@ export type Obstacle = {
   kind: 'tree' | 'building' | 'boat'
   /** Stays solid when a bomb flattens the city around it, as the hospital does. */
   bombproof?: boolean
+  /** Part of the condemned tower, which a demolition brings down. */
+  condemned?: boolean
   /**
    * A box instead of a cylinder: half its size along its own X and Z axes, and its turn
    * around the vertical in radians. `radius` then reaches its corners, for the lookup.
@@ -1055,18 +1058,20 @@ export const OBSTACLES: Obstacle[] = [
       kind: 'tree'
     })
   ),
-  // Decks stop 1 m short of their tops, so wheels pressed into a deck do not touch them
+  // Decks stop 1 m short of their tops, so wheels pressed into a deck do not touch them.
+  // Big decks become a grid of boxes, small enough for the collision lookup.
   ...STRUCTURES.flatMap(structure => {
     const kind = structure.kind === 'ship' ? 'boat' : 'building'
-    const circles: Obstacle[] = structure.posts.map(post => ({ ...post, kind, bombproof: true }))
+    const condemned = structure.kind === 'condemned'
+    const cells: Obstacle[] = structure.posts.map(post => ({ ...post, kind, bombproof: true }))
     for (const deck of structure.decks) {
-      const along = Math.ceil(deck.length / 12)
-      const across = Math.ceil(deck.width / 12)
+      const along = Math.ceil(deck.length / 30)
+      const across = Math.ceil(deck.width / 30)
       const cellLength = deck.length / along
       const cellWidth = deck.width / across
       for (let i = 0; i < along; i++) {
         for (let j = 0; j < across; j++) {
-          circles.push({
+          cells.push({
             ...fromStrip(
               deck,
               (i - (along - 1) / 2) * cellLength,
@@ -1076,13 +1081,35 @@ export const OBSTACLES: Obstacle[] = [
             top: deck.top - 1,
             radius: Math.hypot(cellLength, cellWidth) * 0.5,
             kind,
-            bombproof: true
+            bombproof: true,
+            condemned,
+            box: {
+              halfWidth: cellWidth / 2,
+              halfDepth: cellLength / 2,
+              turn: -(deck.heading * Math.PI) / 180
+            }
           })
         }
       }
     }
-    return circles
+    return cells
   }),
+  // The site crane: its mast, and its jib and counter-jib as one long, thin box
+  { ...SITE_CRANE, radius: 1.6, kind: 'building', bombproof: true },
+  {
+    x: SITE_CRANE.x + Math.sin(SITE_CRANE.heading) * ((SITE_CRANE.ahead - SITE_CRANE.behind) / 2),
+    z: SITE_CRANE.z - Math.cos(SITE_CRANE.heading) * ((SITE_CRANE.ahead - SITE_CRANE.behind) / 2),
+    base: SITE_CRANE.jib - 2,
+    top: SITE_CRANE.jib + 2,
+    radius: (SITE_CRANE.ahead + SITE_CRANE.behind) / 2,
+    kind: 'building',
+    bombproof: true,
+    box: {
+      halfWidth: 1.5,
+      halfDepth: (SITE_CRANE.ahead + SITE_CRANE.behind) / 2,
+      turn: -SITE_CRANE.heading
+    }
+  },
   {
     x: LIGHTHOUSE.x,
     z: LIGHTHOUSE.z,

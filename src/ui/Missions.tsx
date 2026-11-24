@@ -2,6 +2,14 @@ import { type ReactNode, useCallback, useRef, useState } from 'react'
 import { bombAdvice, missileAdvice } from '../game/bombs'
 import { type Advice, landingAdvice } from '../game/coach'
 import { combatAdvice } from '../game/combat'
+import {
+  fromTower,
+  type HoverFault,
+  hoverFault,
+  SAFE_DISTANCE,
+  SLING_HIGH,
+  SLING_LOW
+} from '../game/demolition'
 import { game, useGame } from '../game/game'
 import {
   HOIST_HIGH,
@@ -16,6 +24,7 @@ import {
 } from '../game/missions'
 import { HANGAR } from '../sim/aircraft'
 import type { FlightSim } from '../sim/flight-sim'
+import { CHARGE_MARKS } from '../world/demolition'
 import { AIRPORTS } from '../world/island'
 import { distanceText, goalDirection, goalDistance } from './Goal'
 import { Key } from './Hud'
@@ -46,7 +55,7 @@ const CATEGORY_NOTES: Record<MissionCategory, string> = {
   Bombing: 'The B-2 on the Gull Point practice range.',
   Strike: 'Fighters with guided missiles on the same range.',
   'Air Combat': 'Heat-seekers and flares against enemy aircraft that fight back.',
-  Helicopter: 'The Black Hawk: hovering, rooftop pads, and rescues at sea.'
+  Helicopter: 'The Black Hawk: hovering, rooftop pads, rescues at sea, and a demolition.'
 }
 
 /** Mission text with keys in square brackets drawn as key caps. */
@@ -283,6 +292,7 @@ export function MissionCard({ mission }: { mission: Mission }) {
         <BombPanel total={mission.bombs} demolish={mission.demolish} />
       )}
       {mission.rescue && <RescuePanel rescue={mission.rescue} />}
+      {mission.demolition && <DemolitionPanel />}
       {alert && (
         <p
           role="alert"
@@ -325,6 +335,55 @@ function RescuePanel({ rescue }: { rescue: Rescue }) {
       },
       [rescue]
     )
+  )
+  return (
+    <div className="border-ink/25 mt-2 border-t pt-2">
+      <span ref={count} className="font-bold tabular-nums" />
+      <span ref={hint} className="mt-1 block leading-snug empty:hidden" />
+    </div>
+  )
+}
+
+// What to fix when the hover cannot work the sling, by what is wrong with it
+const SLING_HINTS: Record<HoverFault, string> = {
+  far: 'Out of reach of the sling: hover right over the green mark.',
+  high: `Too high for the sling: come down below ${Math.round(SLING_HIGH * FEET_PER_METRE)} ft.`,
+  low: `Too low: climb above ${Math.round(SLING_LOW * FEET_PER_METRE)} ft.`,
+  drifting: 'Drifting: let go of the keys to steady the hover.',
+  landed: 'The sling works only from a hover: lift off.'
+}
+
+/**
+ * Charges set, the progress of the one being hooked on or lowered, and what keeps the sling
+ * from working. Once the fuse is lit: the seconds left and how far the tower is.
+ */
+function DemolitionPanel() {
+  const count = useRef<HTMLSpanElement>(null)
+  const hint = useRef<HTMLSpanElement>(null)
+  useTelemetry(
+    useCallback((sim: FlightSim) => {
+      const job = game.missions.demolition
+      if (!job) return
+      const away = Math.round(fromTower(sim))
+      if (job.fuse !== null || job.blown) {
+        const left = Math.max(0, Math.ceil(job.fuse ?? 0))
+        setText(count.current, `Fuse ${left} s · ${away} m from the tower`)
+        setText(
+          hint.current,
+          away < SAFE_DISTANCE
+            ? `Too close: get ${SAFE_DISTANCE - away} m further away.`
+            : 'Far enough. Watch the tower.'
+        )
+        return
+      }
+      const work = job.carrying ? 'Lowering' : 'Hooking on'
+      const share = job.progress > 0 ? ` · ${work} ${Math.round(job.progress * 100)}%` : ''
+      setText(count.current, `Charges set ${job.planted} of ${CHARGE_MARKS.length}${share}`)
+      const { target } = job
+      const fault = target && hoverFault(sim, target)
+      const near = target && Math.hypot(sim.position.x - target.x, sim.position.z - target.z) < 150
+      setText(hint.current, fault && near ? SLING_HINTS[fault] : '')
+    }, [])
   )
   return (
     <div className="border-ink/25 mt-2 border-t pt-2">

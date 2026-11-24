@@ -1,10 +1,12 @@
 import { KNOT } from '../sim/aircraft'
 import type { Controls, FlightSim } from '../sim/flight-sim'
 import { APPROACHES, onCentreline } from '../world/approaches'
+import { CHARGE_MARKS, type Spot, SUPPLY_TRUCK, TOWER_FOOT } from '../world/demolition'
 import {
   AIRPORTS,
   type Airport,
   CITIES,
+  DEMOLITION_GROUNDS,
   fromStrip,
   type HelipadId,
   heightAt,
@@ -23,6 +25,13 @@ import {
   type EnemySpawn,
   type EscortSpawn
 } from './combat'
+import {
+  Demolition,
+  type DemolitionEvent,
+  FUSE_SECONDS,
+  SAFE_DISTANCE,
+  SLING_REACH
+} from './demolition'
 import type { TimeOfDay, Weather, WindLevel } from './game'
 import type { Navigator } from './navigation'
 import type { Pilot } from './pilot'
@@ -91,6 +100,8 @@ export type MissionContext = {
   aboard: number
   /** How the last slot gate went wrong: flown through too level, or past its frame. */
   missedSlot: 'level' | 'outside' | null
+  /** The charges and fuse, on the demolition mission. */
+  demolition?: Demolition
 }
 
 /**
@@ -192,6 +203,8 @@ export type Mission = {
   microburst?: Microburst
   /** A boat in distress at sea, its survivors to winch up one by one from a steady hover. */
   rescue?: Rescue
+  /** Charges to sling one by one from the site's truck onto the condemned tower. */
+  demolition?: boolean
 }
 
 /** A boat in distress. x and z in metres; the survivors come up one at a time. */
@@ -698,6 +711,36 @@ const BOAT_GOAL: Goal = {
 const AUTOROTATION_RUNWAY = airport('CBI').runways[0]
 const AUTOROTATION_START = fromStrip(AUTOROTATION_RUNWAY, -AUTOROTATION_RUNWAY.length / 2 - 800, 0)
 const FLAMEOUT_AT = 6
+
+// Demolition: the charges go from the truck on the site to the marks on the condemned tower.
+// The helicopter starts 1.1 km north-east of the site, over open ground, facing the truck.
+const TRUCK_GOAL: Goal = { ...SUPPLY_TRUCK, spot: SLING_REACH }
+const markGoal = (mark: Spot): Goal => ({ ...mark, name: 'Charge mark', spot: SLING_REACH })
+const TOWER_JOB_START = (() => {
+  const { x, z } = fromStrip(DEMOLITION_GROUNDS, 800, 800)
+  const toTruck = Math.atan2(SUPPLY_TRUCK.x - x, z - SUPPLY_TRUCK.z) / DEGREES
+  return { x, z, heading: Math.round(toTruck + 360) % 360 }
+})()
+const fromTruck = (context: MissionContext) =>
+  Math.hypot(context.sim.position.x - SUPPLY_TRUCK.x, context.sim.position.z - SUPPLY_TRUCK.z)
+const charges = CHARGE_MARKS.length
+
+/** Hook a charge on at the truck, then lower it onto its mark, for every mark in turn. */
+const slingSteps = CHARGE_MARKS.flatMap((mark, i): Objective[] => [
+  {
+    text:
+      i === 0
+        ? `Press [E] until the speed hold reads Hover. Hover 20 to 100 ft over the truck while the crew hooks on charge 1 of ${charges}.`
+        : `Fly back to the truck. Hover 20 to 100 ft over it while the crew hooks on charge ${i + 1} of ${charges}.`,
+    done: c => (c.demolition?.carrying ?? false) || (c.demolition?.planted ?? 0) > i,
+    goal: TRUCK_GOAL
+  },
+  {
+    text: `Carry the charge to the green mark on the ${mark.name}. Hover 20 to 100 ft over it while the cable lowers it.`,
+    done: c => (c.demolition?.planted ?? 0) > i,
+    goal: markGoal(mark)
+  }
+])
 // The glide from the start reaches the runway about this far past its threshold
 const AUTOROTATION_AIM = fromStrip(AUTOROTATION_RUNWAY, -AUTOROTATION_RUNWAY.length / 2 + 1000, 0)
 const RUNWAY_GOAL: Goal = {
@@ -2111,6 +2154,44 @@ export const MISSIONS: Mission[] = [
     ]
   },
   {
+    id: 'tower-takedown',
+    title: 'Tower Takedown',
+    category: 'Helicopter',
+    aircraft: 'uh60',
+    summary: 'Sling four charges onto a condemned tower, then get clear before it blows.',
+    briefing: `Azure Heights, a half-built tower past the north end of Port Azure, has stood empty for 20 years. Today it comes down. A truck on the site holds ${charges} charges. Hover 20 to 100 ft over the truck, and the crew hooks one onto your cargo hook. Carry it to the green mark on the tower and hover over the mark while the cable lowers it. Mind the walls: the rotor is 16 m across, and a blade touching the tower is a crash. The last charge lights a ${FUSE_SECONDS} s fuse, so fly at least ${SAFE_DISTANCE} m away before it blows.`,
+    start: {
+      kind: 'air',
+      x: TOWER_JOB_START.x,
+      z: TOWER_JOB_START.z,
+      altitude: TOWER_FOOT + 150,
+      heading: TOWER_JOB_START.heading,
+      speed: 60
+    },
+    wind: 'light',
+    demolition: true,
+    timeLimit: 720,
+    objectives: [
+      {
+        text: 'Fly toward the green marker on the supply truck. [Q] speeds up, [E] slows down.',
+        done: c => fromTruck(c) < 250,
+        goal: TRUCK_GOAL
+      },
+      ...slingSteps,
+      {
+        text: `The fuse is lit. Fly at least ${SAFE_DISTANCE} m from the tower before it blows. [Q] speeds up.`,
+        done: c => c.demolition?.blown ?? false
+      }
+    ],
+    failures: [
+      {
+        reason: c =>
+          `You were only ${Math.round(c.demolition?.blastDistance ?? 0)} m from the tower when it blew. Fly at least ${SAFE_DISTANCE} m clear before the fuse runs out.`,
+        failed: c => (c.demolition?.blastDistance ?? SAFE_DISTANCE) < SAFE_DISTANCE
+      }
+    ]
+  },
+  {
     id: 'autorotation',
     title: 'Engine Failure',
     category: 'Helicopter',
@@ -2203,6 +2284,9 @@ export class MissionRunner {
   /** Rescue missions: survivors aboard, and the share of the next one's winching done. */
   aboard = 0
   hoist = 0
+  /** The demolition mission's charges and fuse, and what happened to them this frame. */
+  demolition: Demolition | null = null
+  demolitionEvent: DemolitionEvent | null = null
   private held = 0
   /** Seconds each failure's condition has held, net of the time it has not. */
   private strain: number[] = []
@@ -2220,6 +2304,8 @@ export class MissionRunner {
     this.gates = 0
     this.aboard = 0
     this.hoist = 0
+    this.demolition = mission.demolition ? new Demolition() : null
+    this.demolitionEvent = null
     this.held = 0
     this.strain = mission.failures?.map(() => 0) ?? []
     this.warning = null
@@ -2233,6 +2319,7 @@ export class MissionRunner {
 
   stop() {
     this.mission = null
+    this.demolition = null
   }
 
   /**
@@ -2279,7 +2366,10 @@ export class MissionRunner {
   /** Advances by `dt` seconds. Returns the result once the mission is decided. */
   update(
     dt: number,
-    context: Omit<MissionContext, 'time' | 'gates' | 'touchdown' | 'aboard' | 'missedSlot'>
+    context: Omit<
+      MissionContext,
+      'time' | 'gates' | 'touchdown' | 'aboard' | 'missedSlot' | 'demolition'
+    >
   ): MissionResult | null {
     const { mission } = this
     if (!mission) return null
@@ -2311,13 +2401,15 @@ export class MissionRunner {
         this.hoist = 0
       }
     }
+    this.demolitionEvent = this.demolition?.update(dt, sim) ?? null
     const full: MissionContext = {
       ...context,
       time: this.time,
       gates: this.gates,
       touchdown: this.touchdown,
       aboard: this.aboard,
-      missedSlot: this.missedSlot
+      missedSlot: this.missedSlot,
+      demolition: this.demolition ?? undefined
     }
     mission.script?.(full)
     this.warning = null

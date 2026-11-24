@@ -443,6 +443,20 @@ export const CITIES: City[] = [
   cityBeside('Verity', 'CVY', { away: 1600, shift: -300, length: 1800, width: 1600 })
 ]
 
+const DEMOLITION_CITY = CITIES.find(city => city.name === 'Port Azure') ?? CITIES[1]
+
+/**
+ * The demolition site: a fenced lot of bare earth 250 m past the north end of Port Azure,
+ * where a half-built tower has stood empty for years. It runs along the city's axes, and
+ * trees and houses keep off it.
+ */
+export const DEMOLITION_GROUNDS: Strip = {
+  ...fromStrip(DEMOLITION_CITY, 1150, 450),
+  heading: DEMOLITION_CITY.heading,
+  length: 240,
+  width: 240
+}
+
 /**
  * Bombing range on the quiet east side of Gull Point: a level, cleared circle of bare
  * earth well away from the airstrip and any houses, where the B-2 missions drop.
@@ -562,7 +576,17 @@ export function isPaved(x: number, z: number) {
 export type Deck = Strip & {
   base: number
   top: number
-  part: 'tower' | 'wing' | 'hull' | 'bow' | 'bridge' | 'helideck' | 'deck' | 'module' | 'quarters'
+  part:
+    | 'tower'
+    | 'wing'
+    | 'hull'
+    | 'bow'
+    | 'bridge'
+    | 'helideck'
+    | 'deck'
+    | 'module'
+    | 'quarters'
+    | 'block'
 }
 
 /** Upright cylinder that is solid but no place to land, such as a platform leg or a mast. */
@@ -580,7 +604,7 @@ export type Post = {
  * and sets the axes its parts are laid out on. Every part lies within `reach` of its centre.
  */
 export type Structure = {
-  kind: 'hospital' | 'ship' | 'platform'
+  kind: 'hospital' | 'ship' | 'platform' | 'condemned'
   name: string
   x: number
   z: number
@@ -704,11 +728,48 @@ function buildPlatform() {
   return site.structure
 }
 
+/**
+ * Each block of the condemned tower: half its side in metres, and the heights of its floor
+ * and roof above the ground. Each block steps back from the one below, leaving a terrace.
+ */
+export const CONDEMNED_BLOCKS: [half: number, base: number, top: number][] = [
+  [42, 0, 33],
+  [26, 33, 75],
+  [10, 75, 105]
+]
+
+/**
+ * Azure Heights, the half-built tower in the middle of the demolition site: three blocks of
+ * bare concrete. Its terraces and roof are solid ground, like any deck.
+ */
+function buildCondemned() {
+  const { x, z, heading } = DEMOLITION_GROUNDS
+  const [[foot]] = CONDEMNED_BLOCKS
+  const site = layOut({ kind: 'condemned', name: 'Azure Heights', x, z, heading, reach: 62 })
+  // Stand on the lowest corner, so no wall floats above a dip
+  let base = heightAt(x, z)
+  for (const [along, across] of [
+    [-1, -1],
+    [-1, 1],
+    [1, -1],
+    [1, 1]
+  ]) {
+    const corner = fromStrip(DEMOLITION_GROUNDS, along * foot, across * foot)
+    base = Math.min(base, heightAt(corner.x, corner.z))
+  }
+  base -= 0.5
+  for (const [half, from, to] of CONDEMNED_BLOCKS) {
+    site.deck(0, 0, [half * 2, half * 2], base + from, base + to, 'block')
+  }
+  return site.structure
+}
+
 export const HOSPITAL = buildHospital()
 export const RESCUE_SHIP = buildShip()
 export const PLATFORM = buildPlatform()
+export const CONDEMNED = buildCondemned()
 /** Structures whose decks are ground for the flight model. */
-export const STRUCTURES = [HOSPITAL, RESCUE_SHIP, PLATFORM]
+export const STRUCTURES = [HOSPITAL, RESCUE_SHIP, PLATFORM, CONDEMNED]
 
 /** Each structure's decks with their axes worked out ahead, for lookups every physics step. */
 const DECK_SITES = STRUCTURES.map(structure => ({
@@ -904,11 +965,12 @@ export function forestAt(x: number, z: number) {
 }
 
 /**
- * True where trees and houses must not stand: airports, their approach paths, cities, and
- * the bombing range.
+ * True where trees and houses must not stand: airports, their approach paths, cities, the
+ * demolition site, and the bombing range.
  */
 export function isClearZone(x: number, z: number) {
   for (const city of CITIES) if (outside(city, x, z) < 60) return true
+  if (outside(DEMOLITION_GROUNDS, x, z) < 50) return true
   if (Math.hypot(x - RANGE.x, z - RANGE.z) < RANGE.radius + 200) return true
   for (const airport of AIRPORTS) {
     if (Math.hypot(x - airport.x, z - airport.z) > airport.reach + 1200) continue
@@ -964,8 +1026,13 @@ export function groundColor(x: number, z: number, out: Rgb) {
   for (const airport of AIRPORTS) mown = Math.max(mown, airportBlend(airport, x, z))
   for (const city of CITIES) mown = Math.max(mown, 1 - smoothstep(0, 300, outside(city, x, z)))
   mix(out, MOWN, smoothstep(0.5, 0.9, mown))
-  // The range is bare, churned earth
+  // The range and the demolition site are bare, churned earth
   mix(out, RANGE_EARTH, smoothstep(0.75, 1, rangeBlend(x, z)) * (0.8 + patchy * 0.2))
+  mix(
+    out,
+    RANGE_EARTH,
+    (1 - smoothstep(0, 60, outside(DEMOLITION_GROUNDS, x, z))) * (0.7 + patchy * 0.2)
+  )
   mix(out, SCREE, smoothstep(480, 680, height + patchy * 60))
   mix(out, SNOW, smoothstep(900, 1010, height + patchy * 50))
   mix(out, SAND, 1 - smoothstep(1.5, 5, height))

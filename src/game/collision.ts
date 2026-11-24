@@ -76,12 +76,14 @@ function insideCylinder(x: number, z: number, base: number, top: number, radius:
 /**
  * Returns what the aircraft has flown into, or null.
  * `time` is the scenery clock in seconds, which positions the balloons and boats.
+ * `demolished` is true once the condemned tower has come down.
  */
 export function findCollision(
   sim: FlightSim,
   time: number,
   traffic: Traffic,
-  ruins?: Ruins
+  ruins?: Ruins,
+  demolished = false
 ): CrashReason | null {
   const { position } = sim
   const reach = sim.spec.wingSpan
@@ -123,6 +125,7 @@ export function findCollision(
         const bucket = grid.get(cellKey(point.x + dx, point.z + dz))
         if (!bucket) continue
         for (const obstacle of bucket) {
+          if (demolished && obstacle.condemned) continue
           // A building a bomb brought down is rubble now. Its widest blocks reach past
           // their centre, so the flattened area counts a little wider.
           if (

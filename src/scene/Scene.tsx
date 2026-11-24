@@ -7,6 +7,7 @@ import { FOG_DENSITY, HORIZON_COLOR } from './atmosphere'
 import { Bombing } from './Bombing'
 import { CameraRig } from './CameraRig'
 import { CityStreets } from './CityStreets'
+import { DemolitionSite } from './Demolition'
 import { Effects } from './Effects'
 import { Glow } from './Glow'
 import { Helipads } from './Helipads'
@@ -59,6 +60,7 @@ export function Scene() {
       <ApproachPath />
       <MissionGates />
       <RescueBoat />
+      <DemolitionSite />
       <Bombing />
       <AirCombat />
       <Trees />

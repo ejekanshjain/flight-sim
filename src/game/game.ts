@@ -3,9 +3,11 @@ import { Vector3 } from 'three'
 import { type AircraftSpec, DEFAULT_AIRCRAFT, engineArms, HANGAR, KNOT } from '../sim/aircraft'
 import { type CrashReason, FlightSim } from '../sim/flight-sim'
 import { APPROACHES, onCentreline, pathAltitude } from '../world/approaches'
+import { CHARGE_MARKS, TOWER_FOOT } from '../world/demolition'
 import {
   AIRPORTS,
   type Airport,
+  DEMOLITION_GROUNDS,
   FUEL_REACH,
   FUEL_STANDS,
   fromStrip,
@@ -18,6 +20,7 @@ import { Sound } from './audio'
 import { Bombs, type Impact } from './bombs'
 import { findCollision } from './collision'
 import { AirCombat, type CombatEvent } from './combat'
+import type { DemolitionEvent } from './demolition'
 import { Effects } from './effects'
 import { Gpws } from './gpws'
 import { Look } from './look'
@@ -123,6 +126,8 @@ const DISTRESS_GAP = 0.25
 const CRASH_REPLAY = 3
 // Seconds a won bombing mission flies on, so the last explosion shows before the menu
 const BLAST_REPLAY = 4
+// Seconds the view circles the condemned tower as it comes down, before the menu
+const COLLAPSE_REPLAY = 10
 // A flight counts once the aircraft has climbed this high, in metres
 const AIRBORNE_HEIGHT = 30
 
@@ -553,7 +558,13 @@ class Game {
         this.updateWind(step)
         this.sim.step(step, this.pilot.controls, this.wind)
         // Trees, buildings, balloons, boats, and other aircraft are solid
-        this.sim.crash ??= findCollision(this.sim, this.sceneryTime, this.traffic, this.bombs.ruins)
+        this.sim.crash ??= findCollision(
+          this.sim,
+          this.sceneryTime,
+          this.traffic,
+          this.bombs.ruins,
+          this.missions.demolition?.blown
+        )
         if (this.sim.crash) break
       }
       if (this.sim.crash) this.breakUp(this.sim.crash)
@@ -712,14 +723,37 @@ class Game {
       bombsight: this.state.bombsight,
       combat: this.combat
     })
+    this.onDemolition(this.missions.demolitionEvent)
     if (!result) return
-    // A fight won in the air circles the last blast; one that ends with a landing does not
+    // A fight won in the air circles the last blast; one that ends with a landing does not.
+    // A demolition always circles the falling tower.
+    const demolished = this.missions.demolition?.blown ?? false
     const fought = this.bombs.targets.length > 0 || this.combat.active
+    if (result.passed && demolished) {
+      this.won = { result, left: COLLAPSE_REPLAY }
+      return
+    }
     if (result.passed && fought && !this.sim.onGround) {
       this.won = { result, left: BLAST_REPLAY }
       return
     }
     this.finishMission(result)
+  }
+
+  /** A chirp as a charge is hooked on or set down, and every charge going off at once. */
+  private onDemolition(event: DemolitionEvent | null) {
+    if (event === 'hooked' || event === 'planted') {
+      if (!this.state.muted) this.sound.chirp()
+      return
+    }
+    if (event !== 'blast') return
+    for (const mark of CHARGE_MARKS) {
+      this.effects.explode(spot.set(mark.x, mark.y + 1, mark.z), STILL, 1.8, true)
+    }
+    const foot = new Vector3(DEMOLITION_GROUNDS.x, TOWER_FOOT, DEMOLITION_GROUNDS.z)
+    this.blast({ at: foot, water: false, hit: null, miss: 0, fell: 0 })
+    // The view circles the middle of the tower, not its foot
+    this.lastBlast.y += 30
   }
 
   private finishMission(result: MissionResult) {

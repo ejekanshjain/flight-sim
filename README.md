@@ -13,7 +13,7 @@ A friend has built a VR version of the game. Play it at [flight-sim-vr.vercel.ap
 - **Fly free:** pick an aircraft and an airport, then start cold at the stand, lined up on the runway, or already in the air. Add a destination for a flight plan the autopilot can follow.
 - **Refuel anywhere:** every airport has fuel trucks by its stands. Stop beside one with the parking brake set, and the tanks fill in about 20 seconds.
 - **Fly over living cities:** five cities with their own look, skyscraper downtowns, traffic in the streets, and red beacons on the tall towers at night.
-- **Take on missions:** 37 missions in eight groups, from step-by-step tutorials to dogfights and sea rescues.
+- **Take on missions:** 38 missions in eight groups, from step-by-step tutorials to dogfights, sea rescues, and a tower demolition.
 - **Set the conditions:** calm, light, or strong wind. Clear, cloudy, rain, fog, or storm weather. Morning, noon, evening, or night.
 - **Look around:** drag the mouse to circle the aircraft or turn your head in the cockpit, and lock the view on the runway for the turn onto final.
 - **Take pictures:** photo mode freezes the flight, hides the panels, and gives you a free camera.
@@ -39,16 +39,16 @@ Each aircraft has its own engines, weight, speeds, and handling. Every one has a
 
 ## Missions
 
-| Group      | Missions | What you do                                                                              |
-| ---------- | -------- | ---------------------------------------------------------------------------------------- |
-| Tutorial   | 5        | Learn the controls, takeoff, landing, airliner startup, and the autopilot                |
-| Speed Run  | 4        | Race through rings against the clock, and down a city avenue on your side between towers |
-| Airline    | 2        | Fly passengers gate to gate on a flight plan                                             |
-| Challenge  | 11       | Land after engine fires, hydraulic failures, fuel leaks, storms, and fog                 |
-| Bombing    | 4        | Drop bombs on a range and on targets from the B-2                                        |
-| Strike     | 3        | Fire missiles and fly low under the radar                                                |
-| Air Combat | 5        | Dogfight, intercept, and escort a bomber against enemy fighters                          |
-| Helicopter | 3        | Land on a hospital roof, winch sailors off a sinking boat, and autorotate to a landing   |
+| Group      | Missions | What you do                                                                                      |
+| ---------- | -------- | ------------------------------------------------------------------------------------------------ |
+| Tutorial   | 5        | Learn the controls, takeoff, landing, airliner startup, and the autopilot                        |
+| Speed Run  | 4        | Race through rings against the clock, and down a city avenue on your side between towers         |
+| Airline    | 2        | Fly passengers gate to gate on a flight plan                                                     |
+| Challenge  | 11       | Land after engine fires, hydraulic failures, fuel leaks, storms, and fog                         |
+| Bombing    | 4        | Drop bombs on a range and on targets from the B-2                                                |
+| Strike     | 3        | Fire missiles and fly low under the radar                                                        |
+| Air Combat | 5        | Dogfight, intercept, and escort a bomber against enemy fighters                                  |
+| Helicopter | 4        | Land on a hospital roof, winch sailors off a boat, demolish a tower, and autorotate to a landing |
 
 Each mission has a briefing and numbered steps. Landing missions also score your touchdown rate.
 

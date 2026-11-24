@@ -3,6 +3,7 @@ import { Quaternion, Vector3 } from 'three'
 import { HANGAR, KNOT } from '../sim/aircraft'
 import { FlightSim } from '../sim/flight-sim'
 import { APPROACHES, onCentreline, pathAltitude } from '../world/approaches'
+import { CHARGE_MARKS, SUPPLY_TRUCK, TOWER_FOOT } from '../world/demolition'
 import {
   AIRPORTS,
   fromStrip,
@@ -15,6 +16,7 @@ import { Bombs, bombAdvice } from './bombs'
 import { landingAdvice } from './coach'
 import { findCollision } from './collision'
 import { AirCombat } from './combat'
+import { FUSE_SECONDS, SLING_HIGH, SLING_LOW } from './demolition'
 import { Effects } from './effects'
 import { combatSetup, MISSIONS, MissionRunner } from './missions'
 import { Navigator } from './navigation'
@@ -1021,7 +1023,7 @@ test('the rescue boat sits on open sea, and the helicopter mission starts are cl
     const z = rescue.z + Math.sin(angle) * 60
     expect(ISLAND_GROUND.heightAt(x, z)).toBeLessThan(-5)
   }
-  for (const id of ['rooftop-landing', 'sea-rescue', 'autorotation']) {
+  for (const id of ['rooftop-landing', 'sea-rescue', 'autorotation', 'tower-takedown']) {
     const { start } = MISSIONS.find(candidate => candidate.id === id) ?? {}
     if (start?.kind !== 'air') throw new Error(`Missing ${id}`)
     expect(start.altitude - Math.max(ISLAND_GROUND.heightAt(start.x, start.z), 0)).toBeGreaterThan(
@@ -1214,4 +1216,57 @@ test('a slot counts only when flown through on the side', () => {
   expect(counted(Math.PI / 2, halfWidth + 3)).toBe(true)
   expect(counted(0.6, 0)).toBe(false)
   expect(counted(Math.PI / 2, halfWidth + 15)).toBe(false)
+})
+
+test('hovering over the truck or any charge mark, facing any way, keeps the rotor off the tower and crane', () => {
+  const spec = HANGAR.find(candidate => candidate.id === 'uh60')
+  if (!spec) throw new Error('Missing Black Hawk')
+  const sim = new FlightSim(ISLAND_GROUND, spec)
+  const traffic = new Traffic()
+  for (const spot of [SUPPLY_TRUCK, ...CHARGE_MARKS]) {
+    for (const above of [SLING_LOW + 0.5, 15, SLING_HIGH - 0.5]) {
+      for (let heading = 0; heading < Math.PI * 2; heading += Math.PI / 8) {
+        sim.placeInAir(spot.x, spot.y + spec.restHeight + above, spot.z, heading, 0.01)
+        expect(findCollision(sim, 0, traffic)).toBeNull()
+      }
+    }
+  }
+})
+
+test('steady hovers set every charge, and the tower blows clear of the helicopter only from far away', () => {
+  const out = helicopterMission('tower-takedown', {
+    x: SUPPLY_TRUCK.x,
+    z: SUPPLY_TRUCK.z,
+    above: 12
+  })
+  const job = out.runner.demolition
+  if (!job) throw new Error('Missing demolition')
+  const hoverAt = (x: number, y: number, z: number) => {
+    out.sim.placeInAir(x, y + out.sim.spec.restHeight, z, 0, 0.01)
+    out.pilot.resetForAir(out.sim.spec, out.sim)
+    Object.assign(out.pilot.controls, out.sim.settleOnPath(0, 0, true, CALM))
+  }
+  CHARGE_MARKS.forEach((mark, i) => {
+    hoverAt(SUPPLY_TRUCK.x, SUPPLY_TRUCK.y + 12, SUPPLY_TRUCK.z)
+    expect(out.fly(10, undefined, () => job.carrying)).toBeNull()
+    expect(job.carrying).toBe(true)
+    hoverAt(mark.x, mark.y + 12, mark.z)
+    expect(out.fly(10, undefined, () => job.planted > i)).toBeNull()
+    expect(out.sim.crash).toBeNull()
+    expect(job.planted).toBe(i + 1)
+  })
+  expect(job.fuse).not.toBeNull()
+  // From 700 m away the blast passes the mission; a second try that waits nearby fails it
+  hoverAt(SUPPLY_TRUCK.x + 700, TOWER_FOOT + 100, SUPPLY_TRUCK.z)
+  expect(out.fly(FUSE_SECONDS + 2)).toEqual({ passed: true })
+  expect(job.blown).toBe(true)
+  const near = helicopterMission('tower-takedown', {
+    x: SUPPLY_TRUCK.x,
+    z: SUPPLY_TRUCK.z,
+    above: 12
+  })
+  const nearJob = near.runner.demolition
+  if (!nearJob) throw new Error('Missing demolition')
+  Object.assign(nearJob, { planted: CHARGE_MARKS.length, fuse: 1 })
+  expect(near.fly(3)).toMatchObject({ passed: false, reason: expect.stringContaining('500 m') })
 })
