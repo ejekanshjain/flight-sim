@@ -278,7 +278,7 @@ export type AircraftSpec = {
   clRollRate: number
   clYawRate: number
   clAileron: number
-  /** Roll moment that drops the left wing at the stall, as engine torque does. */
+  /** Roll moment that drops the left wing when a pull stalls it, as engine torque does. */
   stallRollBias: number
 
   // Yaw moment
@@ -329,10 +329,11 @@ export type AircraftSpec = {
   reverseThrust: number
   /**
    * Fly-by-wire: the computers trim for level flight, stop the wing short of the stall by
-   * `alphaMargin` radians, and stop the bank at `maxBank` radians. With `maxPitch`, they
-   * also stop the nose above that many radians, so a long pull cannot loop the aircraft.
+   * `alphaMargin` radians, and stop the bank at `maxBank` radians. A push stops at `minLoad`
+   * g, and short of the stall the other way. With `maxPitch`, they also stop the nose above
+   * that many radians, so a long pull cannot loop the aircraft.
    */
-  flyByWire: { alphaMargin: number; maxBank: number; maxPitch?: number } | null
+  flyByWire: { alphaMargin: number; maxBank: number; minLoad: number; maxPitch?: number } | null
   /** Spoilers and brakes come on by themselves after touchdown. */
   autobrake: boolean
 
@@ -740,7 +741,13 @@ function airliner(plan: AirlinerPlan): AircraftSpec {
     gearSeconds: 6,
     reverseThrust: plan.reverseThrust ?? 0.4,
     flyByWire: plan.flyByWire
-      ? { alphaMargin: 0.07, maxBank: 1.15, maxPitch: plan.pitchLimit ? 0.52 : undefined }
+      ? {
+          alphaMargin: 0.07,
+          maxBank: 1.15,
+          // Airbus normal law, which the 787 matches: -1 g at most
+          minLoad: -1,
+          maxPitch: plan.pitchLimit ? 0.52 : undefined
+        }
       : null,
     autobrake: true,
 
@@ -1171,7 +1178,12 @@ function concorde(): AircraftSpec {
     gearSeconds: 7,
     reverseThrust: 0.3,
     // Stops the nose at 25° up, well past a normal 13° rotation, so a long pull cannot loop it
-    flyByWire: { alphaMargin: 0.05, maxBank: Number.POSITIVE_INFINITY, maxPitch: 0.44 },
+    flyByWire: {
+      alphaMargin: 0.05,
+      maxBank: Number.POSITIVE_INFINITY,
+      minLoad: -1,
+      maxPitch: 0.44
+    },
     autobrake: true,
 
     maneuverSpeed: 165,
@@ -1378,7 +1390,7 @@ function b2(): AircraftSpec {
     retractableGear: true,
     gearSeconds: 8,
     reverseThrust: 0,
-    flyByWire: { alphaMargin: 0.05, maxBank: 1.15, maxPitch: 0.44 },
+    flyByWire: { alphaMargin: 0.05, maxBank: 1.15, minLoad: -1, maxPitch: 0.44 },
     autobrake: true,
 
     // Where a full pull reaches the stall and a bomber's +2.5 g together
@@ -1584,7 +1596,8 @@ const F22: AircraftSpec = {
   fuelDump: false,
   fuelBurnIdle: 0.3,
   fuelBurnFull: 16,
-  flyByWire: { alphaMargin: 0.1, maxBank: Number.POSITIVE_INFINITY },
+  // Fighter limits: -3 g pushing
+  flyByWire: { alphaMargin: 0.1, maxBank: Number.POSITIVE_INFINITY, minLoad: -3 },
 
   maneuverSpeed: 170,
   neverExceedSpeed: 800 * KNOT,
@@ -1686,7 +1699,8 @@ const F35: AircraftSpec = {
   fuelDump: true,
   fuelBurnIdle: 0.2,
   fuelBurnFull: 9.5,
-  flyByWire: { alphaMargin: 0.1, maxBank: Number.POSITIVE_INFINITY },
+  // Fighter limits: -3 g pushing
+  flyByWire: { alphaMargin: 0.1, maxBank: Number.POSITIVE_INFINITY, minLoad: -3 },
 
   maneuverSpeed: 175,
   neverExceedSpeed: 700 * KNOT,
@@ -2087,7 +2101,7 @@ function shuttle(): AircraftSpec {
     retractableGear: true,
     gearSeconds: 6,
     reverseThrust: 0,
-    flyByWire: { alphaMargin: 0.08, maxBank: Number.POSITIVE_INFINITY },
+    flyByWire: { alphaMargin: 0.08, maxBank: Number.POSITIVE_INFINITY, minLoad: -1 },
     // The speed brake opens by itself at touchdown, then the brakes come on. The real
     // orbiter also streamed a drag chute, which this cannot model.
     autobrake: true,

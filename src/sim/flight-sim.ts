@@ -729,8 +729,15 @@ export class FlightSim {
         trimMoment = clamp(-(A.cm0 + A.cmAlpha * Math.sin(alphaNeeded)), -A.cmTrim, A.cmTrim * 1.6)
         if (!flaring) this.flareTrim = trimMoment
       }
-      // Alpha protection: the stick cannot pull the wing past its limit
+      // Alpha protection: the stick cannot pull the wing past its limit, nor push it past
+      // the g limit or the stall the other way
       stick = Math.min(stick, (limit - alpha) * 10 - this.angularVelocity.x * 2)
+      const pushLift = (A.flyByWire.minLoad * this.mass * GRAVITY) / Math.max(qS, 1)
+      const floor = Math.max(
+        (pushLift - A.cl0 - flap * A.flapLift) / A.clAlpha,
+        A.flyByWire.alphaMargin - A.negativeStallAlpha
+      )
+      stick = Math.max(stick, (floor - alpha) * 10 - this.angularVelocity.x * 2)
       const { maxPitch } = A.flyByWire
       if (maxPitch !== undefined) {
         stick = Math.min(stick, (maxPitch - this.pitch) * 5 - this.angularVelocity.x * 2)
@@ -757,7 +764,7 @@ export class FlightSim {
         A.clYawRate * yawRate +
         0.5 * separation * spinYaw +
         A.clAileron * wheel * (1 - 0.9 * separation) -
-        A.stallRollBias * separation * (0.4 + this.enginePower))
+        A.stallRollBias * this.stalledFlow * (0.4 + this.enginePower))
     const pitchMoment =
       qS *
       A.chord *

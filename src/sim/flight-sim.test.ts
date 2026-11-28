@@ -196,6 +196,28 @@ describe.each(PLANES)('$name', spec => {
       expect(top - sim.position.y).toBeGreaterThan(60)
     })
   }
+
+  test('holding the stick fully forward pitches the nose down without rolling', () => {
+    const sim = flying(spec, 5000)
+    const c = controls({ throttle: 0.6, gearDown: false, pitch: -1 })
+    let roll = 0
+    let deepest = 0
+    let lowestG = 1
+    // Until the nose points almost straight down, where bank stops meaning much
+    run(sim, c, 6, () => {
+      if (sim.pitch < -1.2) return
+      roll = Math.max(roll, Math.abs(sim.bank))
+      deepest = Math.max(deepest, sim.stall)
+      lowestG = Math.min(lowestG, sim.gLoad)
+    })
+    expect(sim.crash).toBeNull()
+    expect(roll).toBeLessThan(0.1)
+    // Fly-by-wire stops the push at its g limit, short of the stall
+    if (spec.flyByWire) {
+      expect(deepest).toBeLessThan(0.3)
+      expect(lowestG).toBeGreaterThan(spec.flyByWire.minLoad - 0.3)
+    }
+  })
 })
 
 test('the Cessna stalls near 52 kt in level flight and tops out near its listed speed', () => {
