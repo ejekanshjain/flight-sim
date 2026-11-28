@@ -564,48 +564,61 @@ const mirrored = (points: [number, number][]): [number, number][] =>
 
 type Outline = [number, number][]
 
-/** Outlines and layout that differ between the two fighters. Outlines are (x, z) pairs. */
+/**
+ * Outlines and layout that differ between the two fighters. Outlines are (x, z) pairs in
+ * metres. The body, nose and canopy are drawn for a 15 m fighter and stretched along its
+ * length by `stretch`; the outlines are already full size.
+ */
 const FIGHTERS = {
-  f16: {
+  f22: {
+    // Diamond wing: the leading edge sweeps back 42° and the trailing edge forward 17°
     wing: [
-      [0.85, -0.8],
-      [4.6, 2.3],
-      [4.6, 3.3],
-      [0.85, 3.1]
+      [1.6, -1.5],
+      [6.78, 3.16],
+      [6.78, 4],
+      [1.6, 5.6]
     ] as Outline,
+    // Chines along the nose into the wing root
     strake: [
-      [0.45, -3.4],
-      [0.85, -0.8],
-      [0.85, 1.2],
-      [0.45, 1.2]
+      [0.75, -6.4],
+      [1.6, -1.5],
+      [1.6, 1.2],
+      [0.75, 1.2]
     ] as Outline,
+    // Hinged at `flaperonZ` across the swept trailing edge, so it droops almost along it
     flaperon: [
-      [0.9, 0],
-      [4.5, 0.2],
-      [4.5, 0.55],
-      [0.9, 0.75]
+      [1.65, 0.4],
+      [4.3, -0.41],
+      [4.3, 0.39],
+      [1.65, 1.2]
     ] as Outline,
-    flaperonZ: 3.15,
+    flaperonZ: 5.2,
     stabilator: [
-      [0.6, -1],
-      [2.8, 0.25],
-      [2.8, 0.95],
-      [0.6, 0.8]
+      [1.3, -0.2],
+      [4.42, 1.6],
+      [4.42, 2.4],
+      [1.3, 2.5]
     ] as Outline,
+    stabilatorZ: 6.6,
     // Height and distance aft, turned upright when built
     fin: [
-      [0.6, 3.9],
-      [3.4, 6.25],
-      [3.4, 7.15],
-      [0.6, 7.3]
+      [0.6, 5],
+      [3.4, 7.3],
+      [3.4, 8.4],
+      [0.6, 8.6]
     ] as Outline,
     // Sideways position and outward lean of each fin
-    fins: [[0, 0]],
-    bodyWidth: 1.3,
-    noseWidth: 1,
-    canopyZ: -3.3,
-    chinIntake: true,
-    missiles: 4.72
+    fins: [
+      [1.5, 0.49],
+      [-1.5, -0.49]
+    ],
+    // Sideways position of each engine's nozzle
+    engines: [-0.62, 0.62],
+    bodyWidth: 2.1,
+    noseWidth: 1.4,
+    canopyZ: -4.4,
+    intakeX: 1.2,
+    stretch: 1.2
   },
   f35: {
     wing: [
@@ -633,6 +646,7 @@ const FIGHTERS = {
       [3.6, 1.1],
       [1.3, 1.1]
     ] as Outline,
+    stabilatorZ: 6.3,
     fin: [
       [0.5, 4.4],
       [2.8, 6.3],
@@ -643,15 +657,19 @@ const FIGHTERS = {
       [1.25, 0.42],
       [-1.25, -0.42]
     ],
+    engines: [0],
     bodyWidth: 1.95,
     noseWidth: 1.35,
     canopyZ: -4.1,
-    chinIntake: false,
-    missiles: 0
+    intakeX: 1.05,
+    stretch: 1
   }
 }
 
-/** Jet fighter: blended body, swept wing, bubble canopy, and an all-moving tailplane. */
+/**
+ * Jet fighter: blended body, swept wing, bubble canopy, and an all-moving tailplane. With
+ * thrust vectoring, the square nozzles and their flames tilt with the stick.
+ */
 function FighterModel(props: { spec: AircraftSpec; shape: Extract<Shape, { type: 'fighter' }> }) {
   const { spec, shape } = props
   const layout = FIGHTERS[shape.variant]
@@ -679,6 +697,7 @@ function FighterModel(props: { spec: AircraftSpec; shape: Extract<Shape, { type:
     }
   }, [])
   const burner = useRef<Group>(null)
+  const nozzles = useRef<Group>(null)
   const beacon = useRef<Group>(null)
   const lamp = useRef<Group>(null)
   const noseGear = useRef<Group>(null)
@@ -699,6 +718,7 @@ function FighterModel(props: { spec: AircraftSpec; shape: Extract<Shape, { type:
       // The flame flickers in length
       burner.current.scale.z = 0.85 + Math.random() * 0.3
     }
+    if (nozzles.current) nozzles.current.rotation.x = -(spec.thrustVectoring?.angle ?? 0) * c.pitch
     if (beacon.current) beacon.current.visible = !wreck.active && clock.elapsedTime % 1 < 0.12
     if (lamp.current) lamp.current.visible = pilot.landingLights && !wreck.active
 
@@ -752,16 +772,6 @@ function FighterModel(props: { spec: AircraftSpec; shape: Extract<Shape, { type:
           geometry={side === 1 ? geometry.rightFlaperon : geometry.leftFlaperon}
         />
       </group>
-      {layout.missiles > 0 && (
-        <mesh
-          castShadow
-          material={paint.accent}
-          position={[layout.missiles * side, 0, 2.7]}
-          rotation-x={QUARTER_TURN}
-        >
-          <cylinderGeometry args={[0.07, 0.07, 2.9, 8]} />
-        </mesh>
-      )}
       <mesh
         material={side === 1 ? paint.green : paint.red}
         position={[layout.wing[1][0] * side, 0, layout.wing[1][1]]}
@@ -774,49 +784,61 @@ function FighterModel(props: { spec: AircraftSpec; shape: Extract<Shape, { type:
   return (
     <group ref={airframe.root}>
       <Part airframe={airframe} name="fuselage">
-        {/* Wide, flattened centre body that blends into the wings */}
-        <mesh
-          castShadow
-          material={paint.body}
-          position={[0, 0, 0.5]}
-          rotation-x={QUARTER_TURN}
-          scale={[layout.bodyWidth, 1, 0.82]}
-        >
-          <cylinderGeometry args={[0.85, 0.75, 6, 24]} />
-        </mesh>
-        <mesh
-          castShadow
-          material={paint.body}
-          position={[0, 0, 5.25]}
-          rotation-x={QUARTER_TURN}
-          scale={[layout.bodyWidth * 0.88, 1, 0.9]}
-        >
-          <cylinderGeometry args={[0.62, 0.85, 3.5, 24]} />
-        </mesh>
-        <mesh castShadow material={paint.dark} position={[0, 0, 7.3]} rotation-x={QUARTER_TURN}>
-          <cylinderGeometry args={[0.5, 0.64, 0.7, 24, 1, true]} />
-        </mesh>
-        <mesh castShadow material={paint.body} geometry={geometry.rightStrake} />
-        <mesh castShadow material={paint.body} geometry={geometry.leftStrake} />
-        {layout.chinIntake ? (
-          <>
-            <mesh
-              castShadow
-              material={paint.body}
-              position={[0, -0.72, -0.9]}
-              rotation-x={QUARTER_TURN}
-              scale={[1, 1, 0.55]}
-            >
-              <cylinderGeometry args={[0.62, 0.58, 4.2, 20]} />
-            </mesh>
-            <mesh material={paint.dark} position={[0, -0.72, -3.01]} scale={[1, 0.55, 1]}>
-              <circleGeometry args={[0.5, 20]} />
-            </mesh>
-          </>
-        ) : (
-          // One slanted intake on each side of the cockpit
-          [-1, 1].map(side => (
-            <group key={side} position={[1.05 * side, -0.1, -2.2]}>
+        <group scale-z={layout.stretch}>
+          {/* Wide, flattened centre body that blends into the wings */}
+          <mesh
+            castShadow
+            material={paint.body}
+            position={[0, 0, 0.5]}
+            rotation-x={QUARTER_TURN}
+            scale={[layout.bodyWidth, 1, 0.82]}
+          >
+            <cylinderGeometry args={[0.85, 0.75, 6, 24]} />
+          </mesh>
+          <mesh
+            castShadow
+            material={paint.body}
+            position={[0, 0, 5.25]}
+            rotation-x={QUARTER_TURN}
+            scale={[layout.bodyWidth * 0.88, 1, 0.9]}
+          >
+            <cylinderGeometry args={[0.62, 0.85, 3.5, 24]} />
+          </mesh>
+          {/* Nozzles, with the afterburner flames behind them */}
+          <group ref={nozzles} position={[0, 0, 7.1]}>
+            {layout.engines.map(x =>
+              spec.thrustVectoring ? (
+                <mesh key={x} castShadow material={paint.dark} position={[x, 0, 0.35]}>
+                  <boxGeometry args={[0.9, 0.62, 0.7]} />
+                </mesh>
+              ) : (
+                <mesh
+                  key={x}
+                  castShadow
+                  material={paint.dark}
+                  position={[x, 0, 0.2]}
+                  rotation-x={QUARTER_TURN}
+                >
+                  <cylinderGeometry args={[0.5, 0.64, 0.7, 24, 1, true]} />
+                </mesh>
+              )
+            )}
+            <group ref={burner} position={[0, 0, 0.5]}>
+              {layout.engines.map(x => (
+                <group key={x} position-x={x}>
+                  <mesh material={flames.outer} position={[0, 0, 2.1]} rotation-x={QUARTER_TURN}>
+                    <coneGeometry args={[0.47, 4.2, 16, 1, true]} />
+                  </mesh>
+                  <mesh material={flames.core} position={[0, 0, 1.1]} rotation-x={QUARTER_TURN}>
+                    <coneGeometry args={[0.28, 2.2, 16, 1, true]} />
+                  </mesh>
+                </group>
+              ))}
+            </group>
+          </group>
+          {/* One slanted intake on each side of the cockpit */}
+          {[-1, 1].map(side => (
+            <group key={side} position={[layout.intakeX * side, -0.1, -2.2]}>
               <mesh castShadow material={paint.body} position={[0, 0, 1.4]}>
                 <boxGeometry args={[0.85, 0.95, 3.4]} />
               </mesh>
@@ -824,53 +846,53 @@ function FighterModel(props: { spec: AircraftSpec; shape: Extract<Shape, { type:
                 <planeGeometry args={[0.7, 0.8]} />
               </mesh>
             </group>
-          ))
-        )}
-        <group ref={burner} position={[0, 0, 7.6]}>
-          <mesh material={flames.outer} position={[0, 0, 2.1]} rotation-x={QUARTER_TURN}>
-            <coneGeometry args={[0.47, 4.2, 16, 1, true]} />
-          </mesh>
-          <mesh material={flames.core} position={[0, 0, 1.1]} rotation-x={QUARTER_TURN}>
-            <coneGeometry args={[0.28, 2.2, 16, 1, true]} />
-          </mesh>
+          ))}
+          {/* Airbrakes: two panels that swing out from the sides of the tail */}
+          <group ref={leftBrake} position={[-0.72 * layout.bodyWidth * 0.8, 0, 5.9]}>
+            <mesh castShadow material={paint.accent} position={[0, 0, 0.55]}>
+              <boxGeometry args={[0.06, 0.7, 1.1]} />
+            </mesh>
+          </group>
+          <group ref={rightBrake} position={[0.72 * layout.bodyWidth * 0.8, 0, 5.9]}>
+            <mesh castShadow material={paint.accent} position={[0, 0, 0.55]}>
+              <boxGeometry args={[0.06, 0.7, 1.1]} />
+            </mesh>
+          </group>
         </group>
-        {/* Airbrakes: two panels that swing out from the sides of the tail */}
-        <group ref={leftBrake} position={[-0.72 * layout.bodyWidth * 0.8, 0, 5.9]}>
-          <mesh castShadow material={paint.accent} position={[0, 0, 0.55]}>
-            <boxGeometry args={[0.06, 0.7, 1.1]} />
-          </mesh>
-        </group>
-        <group ref={rightBrake} position={[0.72 * layout.bodyWidth * 0.8, 0, 5.9]}>
-          <mesh castShadow material={paint.accent} position={[0, 0, 0.55]}>
-            <boxGeometry args={[0.06, 0.7, 1.1]} />
-          </mesh>
-        </group>
+        <mesh castShadow material={paint.body} geometry={geometry.rightStrake} />
+        <mesh castShadow material={paint.body} geometry={geometry.leftStrake} />
         {leg(leftMain, leftGear, 0.3)}
         {leg(rightMain, rightGear, 0.3)}
       </Part>
 
       <Part airframe={airframe} name="nose">
-        <mesh
-          castShadow
-          material={paint.accent}
-          position={[0, 0, -6.3]}
-          rotation-x={-QUARTER_TURN}
-          scale={[layout.noseWidth, 1, 1]}
-        >
-          <coneGeometry args={[0.42, 2.4, 24]} />
-        </mesh>
-        <mesh
-          castShadow
-          material={paint.body}
-          position={[0, 0, -3.8]}
-          rotation-x={QUARTER_TURN}
-          scale={[layout.noseWidth, 1, 1]}
-        >
-          <cylinderGeometry args={[0.76, 0.42, 2.6, 24]} />
-        </mesh>
-        <mesh material={paint.glass} position={[0, 0.58, layout.canopyZ]} scale={[0.46, 0.55, 1.8]}>
-          <sphereGeometry args={[1, 24, 16]} />
-        </mesh>
+        <group scale-z={layout.stretch}>
+          <mesh
+            castShadow
+            material={paint.accent}
+            position={[0, 0, -6.3]}
+            rotation-x={-QUARTER_TURN}
+            scale={[layout.noseWidth, 1, 1]}
+          >
+            <coneGeometry args={[0.42, 2.4, 24]} />
+          </mesh>
+          <mesh
+            castShadow
+            material={paint.body}
+            position={[0, 0, -3.8]}
+            rotation-x={QUARTER_TURN}
+            scale={[layout.noseWidth, 1, 1]}
+          >
+            <cylinderGeometry args={[0.76, 0.42, 2.6, 24]} />
+          </mesh>
+          <mesh
+            material={paint.glass}
+            position={[0, 0.58, layout.canopyZ]}
+            scale={[0.46, 0.55, 1.8]}
+          >
+            <sphereGeometry args={[1, 24, 16]} />
+          </mesh>
+        </group>
         {leg(nose, noseGear, 0.24)}
         {/* Landing light */}
         <group ref={lamp} position={[0, nose.y + 0.9, nose.z - 0.15]}>
@@ -894,10 +916,10 @@ function FighterModel(props: { spec: AircraftSpec; shape: Extract<Shape, { type:
             <mesh castShadow material={paint.body} geometry={geometry.fin} />
           </group>
         ))}
-        <group ref={rightStabilator} position={[0, -0.05, 6.3]}>
+        <group ref={rightStabilator} position={[0, -0.05, layout.stabilatorZ]}>
           <mesh castShadow material={paint.body} geometry={geometry.rightStabilator} />
         </group>
-        <group ref={leftStabilator} position={[0, -0.05, 6.3]}>
+        <group ref={leftStabilator} position={[0, -0.05, layout.stabilatorZ]}>
           <mesh castShadow material={paint.body} geometry={geometry.leftStabilator} />
         </group>
         <group ref={beacon} position={[0, 0.95, 4.2]}>

@@ -729,6 +729,7 @@ function fighterPilot(sim: FlightSim, pilot: Pilot, combat: AirCombat, nav: Navi
     if (combat.lock >= 0) combat.fire(sim)
     pilot.update(STEP, sim, nav)
     // Bank up to 77° toward the chosen heading and slow toward 380 kt in a hard turn.
+    // Flying straight, hold about 420 kt: any faster and the turn onto a target is too wide.
     // Low, or under 1,000 m above the ground ahead, bank no more than 45° so it can climb.
     const track = Math.atan2(sim.velocity.x, -sim.velocity.z)
     const error = turnFrom(track, pilot.autopilot.heading)
@@ -737,7 +738,8 @@ function fighterPilot(sim: FlightSim, pilot: Pilot, combat: AirCombat, nav: Navi
     const bank = Math.max(-most, Math.min(most, error * 3))
     pilot.controls.roll = limit((bank - sim.bank) * 1.5 + sim.angularVelocity.z * 0.3)
     const slow = sim.indicatedAirspeed / KNOT > 380 ? 0 : 0.9
-    pilot.controls.throttle = Math.abs(error) > 0.5 ? slow : 1
+    const fast = sim.indicatedAirspeed / KNOT > 420 ? 0.6 : 1
+    pilot.controls.throttle = Math.abs(error) > 0.5 ? slow : fast
   }
 }
 
@@ -784,7 +786,7 @@ test('a fighter pilot who turns hard and uses flares wins every air combat missi
 
 test('enemies wait within reach of the base while the player is down rearming', () => {
   const mission = MISSIONS.find(candidate => candidate.id === 'ace-in-a-day')
-  const spec = HANGAR.find(candidate => candidate.id === 'f16')
+  const spec = HANGAR.find(candidate => candidate.id === 'f22')
   const setup = mission && combatSetup(mission)
   const runway = AIRPORTS.find(airport => airport.code === 'EMK')?.runways[0]
   if (!spec || !setup || !runway) throw new Error('Missing mission')
@@ -813,7 +815,7 @@ test('enemies wait within reach of the base while the player is down rearming', 
 
 test('the next wave in Ace in a Day comes at once only with enough missiles and fuel', () => {
   const mission = MISSIONS.find(candidate => candidate.id === 'ace-in-a-day')
-  const spec = HANGAR.find(candidate => candidate.id === 'f16')
+  const spec = HANGAR.find(candidate => candidate.id === 'f22')
   const setup = mission && combatSetup(mission)
   const runway = AIRPORTS.find(airport => airport.code === 'EMK')?.runways[0]
   if (!spec || !setup || !runway) throw new Error('Missing mission')
@@ -842,7 +844,7 @@ test('a pilot who lands to rearm between waves shoots down all three in Ace in a
   Math.random = seeded(11)
   try {
     const mission = MISSIONS.find(candidate => candidate.id === 'ace-in-a-day')
-    const spec = HANGAR.find(candidate => candidate.id === 'f16')
+    const spec = HANGAR.find(candidate => candidate.id === 'f22')
     const setup = mission && combatSetup(mission)
     const runway = AIRPORTS.find(airport => airport.code === 'EMK')?.runways[0]
     if (!mission || !spec || !setup || !runway) throw new Error('Missing mission')
@@ -1128,7 +1130,7 @@ test('both City Run avenues are clear down the middle, with a tower each side of
   const gates = mission?.gates ?? []
   const slots = gates.filter(gate => gate.slot)
   expect(slots).toHaveLength(5)
-  const sim = new FlightSim(ISLAND_GROUND, HANGAR.find(spec => spec.id === 'f16') ?? HANGAR[0])
+  const sim = new FlightSim(ISLAND_GROUND, HANGAR.find(spec => spec.id === 'f22') ?? HANGAR[0])
   const traffic = new Traffic()
   const hits = (x: number, y: number, z: number, heading: number) => {
     sim.placeInAir(x, y, z, heading, 130)

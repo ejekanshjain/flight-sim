@@ -947,8 +947,8 @@ export const MISSIONS: Mission[] = [
     id: 'island-ring',
     title: 'Island Ring',
     category: 'Speed Run',
-    aircraft: 'f16',
-    summary: `Race an F-16 through ${ISLAND_RING.length} gates around the main island.`,
+    aircraft: 'f22',
+    summary: `Race an F-22 through ${ISLAND_RING.length} gates around the main island.`,
     briefing:
       'Fly through every gate in order around Coral Bay island, low over the coast. Full throttle lights the afterburner. You have 6 minutes.',
     start: {
@@ -972,9 +972,9 @@ export const MISSIONS: Mission[] = [
     id: 'city-run',
     title: 'City Run',
     category: 'Speed Run',
-    aircraft: 'f16',
+    aircraft: 'f22',
     summary:
-      'Race an F-16 down two avenues through Coral Bay, rolling on your side between towers.',
+      'Race an F-22 down two avenues through Coral Bay, rolling on your side between towers.',
     briefing:
       'Come in from the sea and drop into the avenue that runs through downtown Coral Bay. Race along it between the skyscrapers. Three narrow slots hang between pairs of towers. Roll at least 45° onto your side as you pass through each one, then roll level before the next. Hold about 250 knots in the avenue so there is time between them. Then climb out over the sea and line up by yourself for the avenue that crosses the city from north to south, with two more slots. Finish high over the skyline. You have 7 minutes.',
     start: {
@@ -1693,8 +1693,8 @@ export const MISSIONS: Mission[] = [
     id: 'dogfight',
     title: 'Dogfight',
     category: 'Air Combat',
-    aircraft: 'f16',
-    summary: 'An F-16 against two enemy fighters that shoot back.',
+    aircraft: 'f22',
+    summary: 'An F-22 against two enemy fighters that shoot back.',
     briefing:
       'Two enemy fighters are coming at you over the sea, 12 km ahead at 10,000 ft. A white box marks each one. Turn until its box turns red, then press Enter for a heat-seeking missile. They fire back: when MISSILE flashes, press Space for flares and turn hard across its path. Six missiles, twenty flares, 15 minutes.',
     start: {
@@ -1781,7 +1781,7 @@ export const MISSIONS: Mission[] = [
     id: 'escort',
     title: 'Escort',
     category: 'Air Combat',
-    aircraft: 'f16',
+    aircraft: 'f22',
     summary: 'Guard a B-2 on its bombing run from fighters that hunt it.',
     briefing:
       'A B-2 is flying east at 25,000 ft to bomb Gull Point Range, and you fly its escort. A green box marks it. Enemy fighters are coming for it, two ahead and two more later. Shoot them down before they get within 4 km of it. The B-2 drops flares and survives one hit, but not a second. Twelve missiles, twenty flares, 15 minutes.',
@@ -1865,7 +1865,7 @@ export const MISSIONS: Mission[] = [
     id: 'night-storm-dogfight',
     title: 'Night Storm Dogfight',
     category: 'Air Combat',
-    aircraft: 'f16',
+    aircraft: 'f22',
     summary: 'Two fighters at night, around a thunderstorm full of lightning.',
     briefing:
       'Two enemy fighters are coming at you at night, with a thunderstorm between you. You will hardly see them: follow the white boxes, and watch for their shapes in the lightning. The air is rough near the storm, and inside the core it can throw you around. Eight missiles, twenty-four flares, 15 minutes.',
@@ -1914,7 +1914,7 @@ export const MISSIONS: Mission[] = [
     id: 'ace-in-a-day',
     title: 'Ace in a Day',
     category: 'Air Combat',
-    aircraft: 'f16',
+    aircraft: 'f22',
     summary: 'Three waves of fighters. Land between them to refuel and rearm when you run low.',
     briefing: `Enemy fighters are attacking Eastmark in waves of two, three, and four. Take off and meet each wave over the sea. The next wave comes at once if you carry a missile for each of its fighters and over a third of your fuel. Otherwise, land at Eastmark and stop on the runway: the ground crew refuels and reloads you in 15 seconds. Run out of missiles mid-fight and you can land to reload then too. Nine kills make you an ace.`,
     start: { kind: 'runway', airport: ACE_BASE },
@@ -1951,10 +1951,10 @@ export const MISSIONS: Mission[] = [
     id: 'missile-run',
     title: 'Missile Run',
     category: 'Strike',
-    aircraft: 'f16',
-    summary: 'An F-16 with four missiles against a radar, a fuel depot, and a target tower.',
+    aircraft: 'f22',
+    summary: 'An F-22 with four missiles against a radar, a fuel depot, and a target tower.',
     briefing:
-      'Your F-16 is 22 km west of Gull Point Range at 3,000 ft with four guided missiles. A white box marks each target. Point the nose at one until its box turns red, then press Enter. The missile does the rest. You have 15 minutes.',
+      'Your F-22 is 22 km west of Gull Point Range at 3,000 ft with four guided missiles. A white box marks each target. Point the nose at one until its box turns red, then press Enter. The missile then steers itself to the target. You have 15 minutes.',
     start: { kind: 'air', x: RANGE.x - 22_000, z: RANGE.z, altitude: 900, heading: 90, speed: 400 },
     missiles: 4,
     targets: [

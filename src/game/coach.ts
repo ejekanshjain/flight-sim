@@ -341,6 +341,9 @@ function power(target: number, throttle: number, why: string): Advice | null {
     return { text: `${why}: ${press} [W] for about ${percent} power.`, tone: 'fix' }
   }
   if (target < throttle - POWER_SLACK) {
+    // A setting that rounds to nothing means idle, so say that instead of "about 0%"
+    if (percent === '0%')
+      return { text: `${why}: ${press} [S] to close the throttle.`, tone: 'fix' }
     return { text: `${why}: ${press} [S] for about ${percent} power.`, tone: 'fix' }
   }
   return null

@@ -29,7 +29,7 @@ A friend has built a VR version of the game. Play it at [flight-sim-vr.vercel.ap
 | Boeing 787-9 Dreamliner   | Wide-body airliner   |
 | Airbus A380               | Double-deck airliner |
 | Concorde                  | Supersonic airliner  |
-| F-16 Fighting Falcon      | Jet fighter          |
+| F-22 Raptor               | Air combat fighter   |
 | F-35A Lightning II        | Stealth fighter      |
 | B-2 Spirit                | Stealth bomber       |
 | Space Shuttle Orbiter     | Unpowered glider     |

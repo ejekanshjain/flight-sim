@@ -783,7 +783,11 @@ export class FlightSim {
           A.cnRudder * controls.yaw +
           A.cnAileron * wheel) -
       propYaw
-    torque.set(pitchMoment, thrustYaw - yawMoment, -rollMoment)
+    // Swivelling nozzles turn part of the thrust up or down at the tail
+    const nozzlePitch = A.thrustVectoring
+      ? thrust * A.thrustVectoring.arm * Math.sin(A.thrustVectoring.angle * stick)
+      : 0
+    torque.set(pitchMoment + nozzlePitch, thrustYaw - yawMoment, -rollMoment)
     // Rudder that would cancel the engines' uneven push, for the autopilot's yaw control
     this.balancingRudder = clamp(thrustYaw / Math.max(qS * A.wingSpan * A.cnRudder, 1), -1, 1)
 

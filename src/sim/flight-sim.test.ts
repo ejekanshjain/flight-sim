@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Vector3 } from 'three'
 import { Pilot } from '../game/pilot'
-import { type AircraftSpec, HANGAR, isGlider, KNOT } from './aircraft'
+import { type AircraftSpec, HANGAR, isGlider, KNOT, speedOfSound } from './aircraft'
 import { type Controls, FlightSim, type Ground } from './flight-sim'
 
 const STEP = 1 / 120
@@ -10,7 +10,7 @@ const FLAT: Ground = { heightAt: () => 0.01, surfaceAt: () => 'runway' }
 const find = (id: string) => HANGAR.find(spec => spec.id === id) as AircraftSpec
 const CESSNA = find('c172')
 const A320 = find('a320')
-const F16 = find('f16')
+const F22 = find('f22')
 /** Big jets with airliner instruments: the airliners and the bomber. */
 const airliner = (spec: AircraftSpec) => spec.panel === 'glass'
 /** Nose-up pitch the gear holds when parked: level on a nose wheel, tail-down on a tail wheel. */
@@ -315,9 +315,38 @@ test('Concorde climbs on full reheat and passes Mach 1.6 within six minutes', ()
   expect(sim.indicatedAirspeed).toBeLessThan(concorde.neverExceedSpeed)
 })
 
+test('the F-22 cruises past Mach 1.4 high up without its afterburner, and the F-35 cannot', () => {
+  const dryTopMach = (spec: AircraftSpec) => {
+    const sim = flying(spec, 11_000, speedOfSound(11_000))
+    // Full dry power: the afterburner lights above 0.85
+    const c = controls({ throttle: 0.84, gearDown: false })
+    let lit = false
+    run(sim, c, 240, () => {
+      holdAltitude(sim, c, 11_000)
+      lit ||= sim.afterburner
+    })
+    expect(sim.crash).toBeNull()
+    expect(lit).toBe(false)
+    return sim.mach
+  }
+  expect(dryTopMach(F22)).toBeGreaterThan(1.4)
+  expect(dryTopMach(find('f35'))).toBeLessThan(1.25)
+})
+
+test("the F-22's swivelling nozzles raise the nose faster at low speed", () => {
+  const pitchAfterPull = (spec: AircraftSpec) => {
+    const sim = flying(spec, 2000, 70)
+    // Half a second of full pull, before the flight computer stops the wing at its limit
+    run(sim, controls({ throttle: 1, pitch: 1, gearDown: false }), 0.5)
+    return sim.pitch
+  }
+  const fixed = pitchAfterPull({ ...F22, thrustVectoring: undefined })
+  expect(pitchAfterPull(F22)).toBeGreaterThan(fixed * 1.5)
+})
+
 test('the airbrake slows a jet down', () => {
   const speedAfter = (speedBrake: boolean) => {
-    const sim = flying(F16, 2000, 200)
+    const sim = flying(F22, 2000, 200)
     const c = controls({ throttle: 0.3, gearDown: false, speedBrake })
     run(sim, c, 12, () => holdAltitude(sim, c, 2000))
     return sim.indicatedAirspeed
@@ -365,7 +394,7 @@ test('a hard touchdown and a gear-up landing both end the flight', () => {
   run(hard, controls(), 5)
   expect(hard.crash).toBe('hard-landing')
 
-  const gearUp = flying(F16, 3.2, 80)
+  const gearUp = flying(F22, 3.2, 80)
   gearUp.velocity.y = -1
   run(gearUp, controls({ gearDown: false }), 10)
   expect(gearUp.crash).toBe('gear-up')

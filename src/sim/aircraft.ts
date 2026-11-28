@@ -138,7 +138,7 @@ export type Shape =
       paint: string
       accent: string
     }
-  | { type: 'fighter'; variant: 'f16' | 'f35'; paint: string; accent: string }
+  | { type: 'fighter'; variant: 'f22' | 'f35'; paint: string; accent: string }
   | BomberShape
   | AirlinerShape
   | ShuttleShape
@@ -289,6 +289,12 @@ export type AircraftSpec = {
   cnAileron: number
 
   engine: PistonEngine | JetEngine | TurboshaftEngine
+  /**
+   * Nozzles that swivel with the stick: how far they turn in radians, and their distance in
+   * metres behind the centre of gravity. They pitch the nose even when the air is too slow
+   * for the tailplane.
+   */
+  thrustVectoring?: { angle: number; arm: number }
   /** Helicopters only: the rotor that replaces the wing and the propulsive thrust. */
   rotor?: RotorSpec
   engineCount: number
@@ -1506,105 +1512,116 @@ const fighterGauges = (maxPower: string): GaugeSpec => ({
   }
 })
 
-const F16: AircraftSpec = {
+/**
+ * F-22A Raptor, from its published figures: 13.56 m span, 78.04 m² of wing, 18.92 m long,
+ * 19,700 kg empty with 8,200 kg of internal fuel, and two Pratt & Whitney F119 engines of
+ * 116 kN dry and 156 kN with afterburner each. Its nozzles swivel 20° up and down, and it
+ * cruises past Mach 1.5 on dry power.
+ */
+const F22: AircraftSpec = {
   ...FIGHTER,
-  id: 'f16',
-  name: 'F-16 Fighting Falcon',
-  label: 'F-16',
-  role: 'Single-engine jet fighter',
+  id: 'f22',
+  name: 'F-22 Raptor',
+  label: 'F-22',
+  role: 'Stealth air superiority fighter',
   description:
-    'Twenty-nine thousand pounds of thrust with the afterburner lit. Fly-by-wire holds it short of the stall. Everything happens fast.',
-  stats: { power: '29,000 lbf', topSpeed: 1176, stallSpeed: 128, climb: 50_000 },
+    'Seventy thousand pounds of thrust from two engines. It holds Mach 1.5 without the afterburner. Swivelling nozzles turn the nose in slow, tight turns where other jets would stall.',
+  stats: { power: '2 × 35,000 lbf', topSpeed: 1290, stallSpeed: 110, climb: 62_000 },
 
-  mass: 11_000,
-  inertiaPitch: 75_674,
-  inertiaYaw: 85_552,
-  inertiaRoll: 12_875,
-  wingArea: 27.87,
-  wingSpan: 9.96,
-  chord: 3.45,
+  // Empty, with missiles in its bays and 30% fuel
+  mass: 22_800,
+  inertiaPitch: 230_000,
+  inertiaYaw: 270_000,
+  inertiaRoll: 45_000,
+  wingArea: 78.04,
+  wingSpan: 13.56,
+  chord: 6,
 
-  cl0: 0.04,
-  clAlpha: 3.5,
+  cl0: 0.03,
+  clAlpha: 3.1,
   flapLift: 0.35,
-  stallAlpha: 0.52,
-  negativeStallAlpha: 0.35,
+  stallAlpha: 0.72,
+  negativeStallAlpha: 0.4,
 
-  cd0: 0.021,
-  gearDrag: 0.03,
-  flapDrag: 0.04,
-  inducedDrag: 0.141,
+  cd0: 0.018,
+  gearDrag: 0.025,
+  flapDrag: 0.035,
+  inducedDrag: 0.16,
+  waveDrag: 0.022,
 
   cm0: 0.02,
-  cmAlpha: -0.35,
-  cmPitchRate: -14,
-  cmElevator: 0.2,
-  cmTrim: 0.25,
+  cmAlpha: -0.3,
+  // Half the F-35's: the long chord already damps the pitch for its inertia
+  cmPitchRate: -8,
+  cmElevator: 0.22,
+  cmTrim: 0.28,
   cmStall: -0.01,
 
   clBeta: -0.05,
   clRollRate: -0.35,
   clYawRate: 0.03,
-  clAileron: 0.045,
-  stallRollBias: 0.004,
+  clAileron: 0.042,
+  stallRollBias: 0.003,
 
-  cnBeta: 0.15,
-  cnYawRate: -0.3,
+  cnBeta: 0.16,
+  cnYawRate: -0.32,
   cnRollRate: 0,
-  cnRudder: 0.03,
+  cnRudder: 0.032,
   cnAileron: -0.002,
 
   engine: {
     type: 'jet',
-    idleThrust: 4000,
-    militaryThrust: 76_000,
-    afterburnerThrust: 127_000,
+    idleThrust: 8000,
+    militaryThrust: 232_000,
+    afterburnerThrust: 312_000,
     afterburnerFrom: 0.85,
-    // Ram air lifts the thrust with speed: about 800 kt low down, Mach 1.85 high up
-    speedLapse: -0.2
+    // Ram air lifts the thrust with speed: Mach 2.25 high up
+    speedLapse: -0.15
   },
-  fuelCapacity: 3200,
+  thrustVectoring: { angle: 0.35, arm: 8 },
+  engineCount: 2,
+  fuelCapacity: 8200,
   fuelDump: false,
-  fuelBurnIdle: 0.12,
-  fuelBurnFull: 7,
-  flyByWire: { alphaMargin: 0.08, maxBank: Number.POSITIVE_INFINITY },
+  fuelBurnIdle: 0.3,
+  fuelBurnFull: 16,
+  flyByWire: { alphaMargin: 0.1, maxBank: Number.POSITIVE_INFINITY },
 
   maneuverSpeed: 170,
   neverExceedSpeed: 800 * KNOT,
-  maxMach: 2.05,
+  maxMach: 2.25,
 
   contactPoints: [
-    wheel(0, -1.6, -3.5, 160_000, 22_000, 'nose'),
-    wheel(-1.2, -1.6, 0.55, 350_000, 45_000, 'main'),
-    wheel(1.2, -1.6, 0.55, 350_000, 45_000, 'main'),
-    skid(-0.55, 6.9, 300_000)
+    wheel(0, -2, -5.2, 300_000, 45_000, 'nose'),
+    wheel(-1.8, -2, 1, 760_000, 100_000, 'main'),
+    wheel(1.8, -2, 1, 760_000, 100_000, 'main'),
+    skid(-0.6, 8.6, 550_000)
   ],
   hullPoints: [
-    hull(0, -0.35, -7.5, true),
-    hull(0, -1, -1, true),
-    hull(-4.7, -0.1, 2),
-    hull(4.7, -0.1, 2),
-    hull(0, 3.4, 6.4),
-    hull(0, 1.25, -3.3)
+    hull(0, -0.4, -9.2, true),
+    hull(0, -1.1, -1, true),
+    hull(-6.6, -0.1, 3.6),
+    hull(6.6, -0.1, 3.6),
+    hull(0, 3.2, 8),
+    hull(0, 1.3, -4.8)
   ],
-  restHeight: 1.49,
-  wingtips: [new Vector3(-4.7, 0, 2.6), new Vector3(4.7, 0, 2.6)],
+  restHeight: 1.88,
+  wingtips: [new Vector3(-6.78, 0, 3.6), new Vector3(6.78, 0, 3.6)],
   breakup: [
-    part(0, 0, 1, 1.1),
-    part(0, 0.1, -5.5, 0.6),
-    part(-2.9, 0, 1.6, 0.35),
-    part(2.9, 0, 1.6, 0.35),
-    part(0, 1.2, 6, 0.7)
+    part(0, 0, 1.4, 1.5),
+    part(0, 0.1, -6.8, 0.8),
+    part(-4, 0, 2.6, 0.5),
+    part(4, 0, 2.6, 0.5),
+    part(0, 1.4, 7.6, 0.9)
   ],
 
-  rotateSpeed: 150,
-  climbSpeed: 300,
-  approachSpeed: 150,
+  rotateSpeed: 140,
+  climbSpeed: 320,
+  approachSpeed: 145,
   cruiseSpeed: 180,
   runwayNeeded: 1400,
   gauges: fighterGauges('RPM %'),
-  camera: { distance: 27, height: 7.5, eye: new Vector3(0, 1.15, -3.6) },
-  shape: { type: 'fighter', variant: 'f16', paint: '#8d959c', accent: '#5d666e' }
+  camera: { distance: 33, height: 8.5, eye: new Vector3(0, 1.3, -5.2) },
+  shape: { type: 'fighter', variant: 'f22', paint: '#7b8389', accent: '#5a6268' }
 }
 
 const F35: AircraftSpec = {
@@ -1614,7 +1631,7 @@ const F35: AircraftSpec = {
   label: 'F-35A',
   role: 'Stealth strike fighter',
   description:
-    'Heavier and wider than the F-16, with the most powerful fighter engine ever built. It flies at angles of attack that would stall anything else here.',
+    'Built around the most powerful fighter engine ever made. Its weapons ride inside to keep it off radar, and it flies steady and precise down low.',
   stats: { power: '43,000 lbf', topSpeed: 1040, stallSpeed: 120, climb: 45_000 },
 
   // Empty, with internal weapons and 30% fuel
@@ -2346,7 +2363,7 @@ export const HANGAR: AircraftSpec[] = [
   B787,
   A380,
   CONCORDE,
-  F16,
+  F22,
   F35,
   B2,
   SHUTTLE,
@@ -2361,8 +2378,9 @@ export const isGlider = (spec: AircraftSpec) =>
 /** Distance of each engine from the centreline, numbered from the left wingtip. */
 export function engineArms(spec: AircraftSpec) {
   const { shape } = spec
-  // A helicopter's engines sit side by side on the cabin roof
+  // A helicopter's engines sit side by side on the cabin roof, and a fighter's in its tail
   if (shape.type === 'helicopter') return spec.engineCount > 1 ? [-0.6, 0.6] : [0]
+  if (shape.type === 'fighter') return spec.engineCount > 1 ? [-0.62, 0.62] : [0]
   if (shape.type !== 'airliner' && shape.type !== 'bomber') return [0]
   const right = shape.engines.map(([x]) => x).sort((a, b) => a - b)
   return [...right.map(x => -x).reverse(), ...right]

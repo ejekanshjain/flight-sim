@@ -260,8 +260,37 @@ function Silhouette({ spec }: { spec: AircraftSpec }) {
         .map(([x, z]): [number, number] => [-x, z])
         .reverse()
     ])
+  } else if (shape.type === 'fighter' && shape.variant === 'f22') {
+    nose = -9.2
+    tail = 9.3
+    // Long body, diamond wing, and the tailplane tucked in behind it
+    parts.push(
+      [
+        [0, nose],
+        [0.8, -5.6],
+        [1.8, -1],
+        [1.8, 7],
+        [1.1, tail],
+        [-1.1, tail],
+        [-1.8, 7],
+        [-1.8, -1],
+        [-0.8, -5.6]
+      ],
+      ...pair([
+        [1.6, -1.5],
+        [half, 3.16],
+        [half, 4],
+        [1.6, 6.4]
+      ]),
+      ...pair([
+        [1.3, 6.4],
+        [4.42, 8.2],
+        [4.42, 9],
+        [1.3, 9.1]
+      ])
+    )
   } else if (shape.type === 'fighter') {
-    const wide = shape.variant === 'f35' ? 1.6 : 1.1
+    const wide = 1.6
     parts.push(
       [
         [0, -7.5],
