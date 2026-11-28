@@ -22,6 +22,8 @@ const TAP_SHARE = 0.3
 const RAMP_SECONDS = 0.6
 // Shift limits stick and rudder to this share of their travel, for fine corrections
 const FINE_SHARE = 0.35
+// Control travel per second toward where an analog stick points
+const ANALOG_RATE = 6
 const THROTTLE_RATE = 0.5
 const TRIM_RATE = 0.25
 // Autopilot knob speeds per second while held: radians, metres, m/s, and m/s of climb
@@ -149,6 +151,11 @@ export class Pilot {
   /** Autothrottle: holds the speed knob, an indicated airspeed in m/s. */
   readonly autothrottle = { on: false, speed: 0 }
   landingLights = false
+  /**
+   * Analog sticks, from a controller or the touch screen, each -1 to 1: pull back, roll
+   * right, rudder right, and throttle up. Zero leaves the control to the keys.
+   */
+  readonly analog = { pitch: 0, roll: 0, yaw: 0, lever: 0 }
 
   private readonly held = new Map<string, number>()
   private climbTrim = 0
@@ -370,9 +377,10 @@ export class Pilot {
     const fine = this.held.has('Shift') ? FINE_SHARE : 1
     const pitchReach = clamp(loading * loading, 0.12, 1) * fine
     const rollReach = clamp(loading, 0.3, 1) * fine
-    const stick = this.axis('ArrowDown', 'ArrowUp')
-    const wheel = this.axis('ArrowRight', 'ArrowLeft')
-    const lever = this.axis('KeyW', 'KeyS')
+    const { analog } = this
+    const stick = analog.pitch || this.axis('ArrowDown', 'ArrowUp')
+    const wheel = analog.roll || this.axis('ArrowRight', 'ArrowLeft')
+    const lever = analog.lever || this.axis('KeyW', 'KeyS')
     const { autopilot } = this
     // An autoland stays engaged on the runway, steering and braking down to taxi speed
     const rollingOut = this.landing(sim, nav) && sim.groundSpeed > ROLLOUT_END
@@ -412,8 +420,12 @@ export class Pilot {
       autopilot.verticalSpeed += this.axis('BracketRight', 'BracketLeft') * VERTICAL_SPEED_RATE * dt
       this.fly(dt, sim, nav, rollReach, pitchReach)
     } else {
-      c.pitch = this.deflect(c.pitch, stick * pitchReach, dt, PITCH_RATE, 'ArrowDown', 'ArrowUp')
-      c.roll = this.deflect(c.roll, wheel * rollReach, dt, DEFLECT_RATE, 'ArrowRight', 'ArrowLeft')
+      c.pitch = analog.pitch
+        ? approach(c.pitch, stick * pitchReach, ANALOG_RATE * dt)
+        : this.deflect(c.pitch, stick * pitchReach, dt, PITCH_RATE, 'ArrowDown', 'ArrowUp')
+      c.roll = analog.roll
+        ? approach(c.roll, wheel * rollReach, ANALOG_RATE * dt)
+        : this.deflect(c.roll, wheel * rollReach, dt, DEFLECT_RATE, 'ArrowRight', 'ArrowLeft')
     }
 
     if (spec.rotor) this.flyCollective(dt, sim, lever)
@@ -422,9 +434,13 @@ export class Pilot {
     this.lastAirspeed = airspeed
 
     if (spec.autoFlaps) c.flapNotch = c.gearDown ? spec.flapLabels.length - 1 : 0
-    const pedals = this.axis('KeyD', 'KeyA')
+    const pedals = analog.yaw || this.axis('KeyD', 'KeyA')
+    const rudder = () =>
+      analog.yaw
+        ? approach(c.yaw, pedals, ANALOG_RATE * dt)
+        : this.deflect(c.yaw, pedals * fine, dt, DEFLECT_RATE, 'KeyD', 'KeyA')
     // A helicopter's stability system holds the heading and balances turns by itself
-    if (spec.rotor) c.yaw = this.deflect(c.yaw, pedals * fine, dt, DEFLECT_RATE, 'KeyD', 'KeyA')
+    if (spec.rotor) c.yaw = rudder()
     else if (autopilot.on && pedals === 0 && sim.onGround) {
       // Rolling out after an autoland: the rudder steers along the runway
       c.yaw = this.rudderHold
@@ -442,7 +458,7 @@ export class Pilot {
       this.rudderHold = clamp(this.rudderHold + sim.slip * YAW_TRIM * bite * dt, -1, 1)
       c.yaw = clamp(sim.balancingRudder + this.rudderHold + sim.slip * YAW_DAMPER * bite, -1, 1)
     } else {
-      c.yaw = this.deflect(c.yaw, pedals * fine, dt, DEFLECT_RATE, 'KeyD', 'KeyA')
+      c.yaw = rudder()
       this.rudderHold = 0
     }
     const trim = this.axis('KeyE', 'KeyQ')
@@ -663,10 +679,11 @@ export class Pilot {
     this.collectiveHeld = true
     const fine = this.held.has('Shift') ? FINE_SHARE : 1
     let climb = 0
-    if (lever > 0) climb = MAX_CLIMB * fine
+    // A key asks for the full rate, a stick for its share of it
+    if (lever > 0) climb = MAX_CLIMB * fine * lever
     else if (lever < 0) {
       const wheels = sim.altitudeAgl - sim.spec.restHeight
-      climb = -Math.min(MAX_DESCENT * fine, Math.max(TOUCHDOWN_SINK, wheels * FLARE_RATE))
+      climb = -Math.min(MAX_DESCENT * fine, Math.max(TOUCHDOWN_SINK, wheels * FLARE_RATE)) * -lever
     } else if (this.autopilot.on) climb = this.rotorClimb
     else {
       this.heightHold ??= sim.position.y + sim.verticalSpeed * HOLD_LEAD

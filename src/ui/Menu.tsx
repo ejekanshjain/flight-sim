@@ -5,6 +5,7 @@ import type { CrashReason } from '../sim/flight-sim'
 import { AIRPORTS, type Airport } from '../world/island'
 import { Key } from './Hud'
 import { MissionActions, MissionsPanel } from './Missions'
+import { FullscreenButton, TOUCH_QUERY, useMedia } from './Touch'
 import { FPM_PER_MS, KNOTS_PER_MS } from './telemetry'
 
 const CRASH_REASONS: Record<CrashReason, string> = {
@@ -105,6 +106,35 @@ const CONTROLS: { title: string; rows: [keys: string[], action: string][] }[] = 
       [['M'], 'Enlarge, then hide the map'],
       [['`'], 'Photo mode: freeze the flight, hide the panels, and move a free camera'],
       [['Esc'], 'Pause']
+    ]
+  },
+  {
+    title: 'Touch Screen',
+    rows: [
+      [['Left'], 'Left stick: throttle and rudder. In the helicopter, climb and turn on the spot'],
+      [['Right'], 'Right stick: pitch and roll'],
+      [['Start'], 'Battery, fuel pumps, and every engine on in one press'],
+      [['Drag'], 'Drag anywhere else to look around. Double-tap to look ahead again'],
+      [['Panel'], 'On a phone, show or hide the full instrument panel']
+    ]
+  },
+  {
+    title: 'PS5 Controller',
+    rows: [
+      [['LS'], 'Left stick: throttle and rudder. In the helicopter, climb and turn on the spot'],
+      [['RS'], 'Right stick: pitch and roll'],
+      [['✕'], 'Fire, or start and resume from the menus'],
+      [['○'], 'Wheel brakes while held. In a fight, drop flares'],
+      [['□'], 'Raise or lower the landing gear'],
+      [['△'], 'Switch between chase and cockpit view'],
+      [['L1', 'R1'], 'Flaps up a notch, down a notch'],
+      [['L2', 'R2'], 'Trim nose down, nose up'],
+      [['L3'], 'Start every engine, with the battery and fuel pumps. Press again to stop them'],
+      [['R3'], 'Autopilot on or off'],
+      [['D-pad'], 'Look around while held'],
+      [['Options'], 'Pause and resume'],
+      [['Create'], 'B-2: open or close the bombsight'],
+      [['Pad'], 'Touchpad: enlarge, then hide the map']
     ]
   }
 ]
@@ -446,6 +476,7 @@ export function Menu() {
   const mission = useGame(state => state.mission)
   const result = useGame(state => state.missionResult)
   const [mode, setMode] = useState<'free' | 'missions'>('free')
+  const touch = useMedia(TOUCH_QUERY)
   // The crash plays out in full view before the card covers it
   if (status === 'flying' || (status === 'crashed' && !crashShown)) return null
 
@@ -484,6 +515,11 @@ export function Menu() {
         <header className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
           <h1 className="text-4xl leading-none font-bold tracking-tight">{heading}</h1>
           <p className="max-w-prose flex-1 text-lg leading-snug">{summary}</p>
+          {touch && (
+            <FullscreenButton
+              className={`${FOCUS} border-ink hover:bg-ink/10 rounded-sm border-2 px-3 py-1 font-bold`}
+            />
+          )}
         </header>
         {mission ? (
           <div className="mt-5 grid gap-8 md:grid-cols-[5fr_6fr]">

@@ -4,7 +4,7 @@ A flight simulator that runs in your browser. Fly twelve real aircraft, from a C
 
 **Play it live: [flight-sim-ten-blue.vercel.app](https://flight-sim-ten-blue.vercel.app/)**
 
-No download or sign-in. It runs on a keyboard in any modern desktop browser.
+No download or sign-in. Fly with a keyboard, a PS5 controller, or touch sticks on a phone or tablet held sideways.
 
 A friend has built a VR version of the game. Play it at [flight-sim-vr.vercel.app](https://flight-sim-vr.vercel.app/), and find its source at [jkugsiya/flight-sim-vr](https://github.com/jkugsiya/flight-sim-vr).
 
@@ -82,6 +82,29 @@ These are the main keys. The menu lists every control under **Controls**.
 | /            | Keep the view on the runway                                        | Keep the view on the runway            |
 | M            | Enlarge or hide the map                                            | Enlarge or hide the map                |
 | Esc          | Pause                                                              | Pause                                  |
+
+### PS5 Controller
+
+Plug in or pair a DualSense, then press any button. It works in desktop and mobile browsers, and the touch controls hide while it is connected. The sticks work like a drone controller:
+
+| Control         | Does                                                          |
+| --------------- | ------------------------------------------------------------- |
+| Left stick      | Throttle and rudder. In the helicopter, climb and turn        |
+| Right stick     | Pitch and roll                                                |
+| ✕               | Fire, or start and resume from the menus                      |
+| ○               | Wheel brakes while held. In a fight, drop flares              |
+| □ and △         | Landing gear, and chase or cockpit view                       |
+| L1 and R1       | Flaps up and down                                             |
+| L2 and R2       | Trim nose down and up                                         |
+| L3 and R3       | Start every engine, and the autopilot                         |
+| D-pad           | Look around while held                                        |
+| Options         | Pause                                                         |
+
+In Chrome and Edge the controller rumbles near a stall, with the afterburner lit, on touchdown, and in a crash.
+
+### Touch Screens
+
+Hold the phone or tablet sideways. The left stick works the throttle and rudder, and the right stick pitch and roll. Buttons beside the sticks change with the flight: **Start** switches on the battery, fuel pumps, and engines in one press. Drag anywhere else to look around. On phones, **Panel** shows the full instrument panel, and **Full Screen** hides the browser bars where the browser allows it.
 
 ## Run It Locally
 

@@ -22,6 +22,7 @@ import { findCollision } from './collision'
 import { AirCombat, type CombatEvent } from './combat'
 import type { DemolitionEvent } from './demolition'
 import { Effects } from './effects'
+import { Controller } from './gamepad'
 import { Gpws } from './gpws'
 import { Look } from './look'
 import {
@@ -97,6 +98,10 @@ export type GameState = {
   destination: Airport | null
   /** Aircraft in the world right now. */
   flown: AircraftSpec
+  /** True while a game controller is connected, which hides the touch controls. */
+  gamepad: boolean
+  /** The full instrument panel, which phones hide behind a button. */
+  instruments: boolean
 }
 
 /** Mean wind speed in m/s for each setting. */
@@ -200,6 +205,8 @@ class Game {
     bombsight: false,
     photo: false,
     photoHint: true,
+    gamepad: false,
+    instruments: false,
     ...savedState(),
     crash: null,
     crashShown: false,
@@ -217,6 +224,7 @@ class Game {
   private sinkRate = 0
   private touchdownRate = 0
   private readonly sound = new Sound()
+  private readonly controller = new Controller()
   private readonly stateListeners = new Set<() => void>()
   private readonly frameListeners = new Set<() => void>()
 
@@ -509,6 +517,23 @@ class Game {
     const next = { small: 'large', large: 'hidden', hidden: 'small' } as const
     this.change({ map: next[this.state.map] })
   }
+  /** Shows or hides the full instrument panel on a phone. */
+  toggleInstruments = () => this.setState({ instruments: !this.state.instruments })
+
+  /**
+   * One-press start for touch screens and controllers: the battery and fuel pumps come on if
+   * needed, then every engine starts. Once all are running, it stops them.
+   */
+  toggleEngines = () => {
+    const c = this.pilot.controls
+    const running = c.engineSwitches.slice(0, this.sim.engines.length).every(Boolean)
+    if (!running) {
+      c.battery = true
+      c.fuelPumps = true
+    }
+    this.pressKey('KeyI')
+    this.releaseKey('KeyI')
+  }
 
   /** Picks a graphics preset, which sets every graphics choice at once. */
   setGraphicsPreset = (preset: Exclude<GraphicsPreset, 'custom'>) =>
@@ -541,6 +566,8 @@ class Game {
   /** Advances the game by one rendered frame of `delta` seconds. */
   frame(delta: number) {
     const dt = Math.min(delta, 0.1)
+    const gamepad = this.controller.update(dt, this)
+    if (gamepad !== this.state.gamepad) this.setState({ gamepad })
     // Photo mode holds the whole world still, as a pause does
     const status = this.state.photo ? 'paused' : this.state.status
     if (delta > 0) this.frameRate += (1 / delta - this.frameRate) * 0.05
@@ -603,88 +630,92 @@ class Game {
     for (const listener of this.frameListeners) listener()
   }
 
+  /**
+   * Works a key, or a touch or controller button standing in for one. `widget` is true when
+   * a focused button or list already reacts to Enter. Returns true when the game used the
+   * key, so the browser should not.
+   */
+  pressKey(code: string, options: { repeat?: boolean; shift?: boolean; widget?: boolean } = {}) {
+    const { repeat = false, shift = false, widget = false } = options
+    const { status } = this.state
+    // Photo mode takes the keyboard: the free camera reads its own keys, the pilot gets none
+    if (this.state.photo) {
+      if (repeat) return code === 'Tab' || code === 'Space'
+      if (code === 'Backquote' || code === 'Escape') this.togglePhoto()
+      else if (code === 'KeyH') this.setState({ photoHint: !this.state.photoHint })
+      return code === 'Tab' || code === 'Space'
+    }
+    if (code === 'Backquote' && status === 'flying' && !repeat) {
+      this.togglePhoto()
+      return false
+    }
+    if (code === 'Escape') {
+      if (status === 'flying') this.pause()
+      else this.resume()
+      return false
+    }
+    // Tab opens and closes the bombsight, so the browser must not move the focus
+    if (code === 'Tab' && status === 'flying') {
+      if (!repeat) this.toggleBombsight()
+      return true
+    }
+    // Enter releases a bomb in the bombsight, and starts or resumes from the menus
+    if (code === 'Enter' && status === 'flying') {
+      if (repeat) return true
+      if (this.combat.active) this.combat.fire(this.sim)
+      // Missiles fire straight from the normal view, with no sight to open
+      else if (this.bombs.missiles > 0) this.bombs.fire(this.sim)
+      else if (this.state.bombsight) {
+        this.bombs.release(this.sim)
+        this.rippleHeld = true
+        this.rippleClock = RIPPLE_START
+      }
+      return true
+    }
+    if (code === 'Enter' && !widget) {
+      if (status === 'paused') this.resume()
+      else if (this.state.mission && status !== 'flying') this.retryMission()
+      else if (status !== 'flying') this.startAtStand()
+      return false
+    }
+    if (status !== 'flying') return false
+    // In the air in a fight, Space drops flares; on the ground it still works the brakes
+    const fighting = this.combat.active && !this.sim.onGround
+    if (code === 'Space' && fighting && !repeat) this.combat.dropFlares(this.sim)
+    if (code === 'KeyC' && !repeat) this.toggleCamera()
+    else if (code === 'KeyM' && !repeat) this.toggleMap()
+    else if (code === 'Slash') {
+      // Firefox opens its quick find on this key unless the page takes it
+      if (!repeat) this.look.toggleRunway()
+      return true
+    } else if (code === 'KeyN' && !repeat) {
+      if (shift) this.nav.select(null, this.sim)
+      else this.nav.cycle(this.sim, WIND_FROM)
+      this.pilot.flyApproach(false, this.sim, this.nav)
+    } else if (code === 'KeyT' && !repeat) {
+      // With nothing picked yet, take the best approach at the nearest airport
+      if (!this.nav.approach) this.nav.cycle(this.sim, WIND_FROM)
+      this.pilot.flyApproach(!this.pilot.flyingApproach, this.sim, this.nav)
+    } else return this.pilot.press(code, repeat, this.sim, this.nav, shift)
+    return false
+  }
+
+  /** Lets go of a key, or of a touch or controller button standing in for one. */
+  releaseKey(code: string) {
+    if (code === 'Enter') this.rippleHeld = false
+    this.pilot.release(code)
+  }
+
   /** Starts listening to the keyboard. Returns a function that stops listening. */
   attach() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return
-      const { status } = this.state
-      // Photo mode takes the keyboard: the free camera reads its own keys, the pilot gets none
-      if (this.state.photo) {
-        if (event.code === 'Tab' || event.code === 'Space') event.preventDefault()
-        if (event.repeat) return
-        if (event.code === 'Backquote' || event.code === 'Escape') this.togglePhoto()
-        else if (event.code === 'KeyH') this.setState({ photoHint: !this.state.photoHint })
-        return
-      }
-      if (event.code === 'Backquote' && status === 'flying' && !event.repeat) {
-        this.togglePhoto()
-        return
-      }
-      if (event.code === 'Escape') {
-        if (status === 'flying') this.pause()
-        else this.resume()
-        return
-      }
-      // A focused button or list already reacts to Enter
       const widget =
         event.target instanceof HTMLButtonElement || event.target instanceof HTMLSelectElement
-      // Tab opens and closes the bombsight, so the browser must not move the focus
-      if (event.code === 'Tab' && status === 'flying') {
-        event.preventDefault()
-        if (!event.repeat) this.toggleBombsight()
-        return
-      }
-      // Enter releases a bomb in the bombsight, and starts or resumes from the menus
-      if (event.code === 'Enter' && status === 'flying') {
-        event.preventDefault()
-        if (event.repeat) return
-        if (this.combat.active) {
-          this.combat.fire(this.sim)
-          return
-        }
-        // Missiles fire straight from the normal view, with no sight to open
-        if (this.bombs.missiles > 0) {
-          this.bombs.fire(this.sim)
-          return
-        }
-        if (!this.state.bombsight) return
-        this.bombs.release(this.sim)
-        this.rippleHeld = true
-        this.rippleClock = RIPPLE_START
-        return
-      }
-      if (event.code === 'Enter' && !widget) {
-        if (status === 'paused') this.resume()
-        else if (this.state.mission && status !== 'flying') this.retryMission()
-        else if (status !== 'flying') this.startAtStand()
-        return
-      }
-      if (status !== 'flying') return
-      // In the air in a fight, Space drops flares; on the ground it still works the brakes
-      const fighting = this.combat.active && !this.sim.onGround
-      if (event.code === 'Space' && fighting && !event.repeat) this.combat.dropFlares(this.sim)
-      if (event.code === 'KeyC' && !event.repeat) this.toggleCamera()
-      else if (event.code === 'KeyM' && !event.repeat) this.toggleMap()
-      else if (event.code === 'Slash') {
-        // Firefox opens its quick find on this key unless the page takes it
-        event.preventDefault()
-        if (!event.repeat) this.look.toggleRunway()
-      } else if (event.code === 'KeyN' && !event.repeat) {
-        if (event.shiftKey) this.nav.select(null, this.sim)
-        else this.nav.cycle(this.sim, WIND_FROM)
-        this.pilot.flyApproach(false, this.sim, this.nav)
-      } else if (event.code === 'KeyT' && !event.repeat) {
-        // With nothing picked yet, take the best approach at the nearest airport
-        if (!this.nav.approach) this.nav.cycle(this.sim, WIND_FROM)
-        this.pilot.flyApproach(!this.pilot.flyingApproach, this.sim, this.nav)
-      } else if (this.pilot.press(event.code, event.repeat, this.sim, this.nav, event.shiftKey)) {
-        event.preventDefault()
-      }
+      const { repeat, shiftKey: shift } = event
+      if (this.pressKey(event.code, { repeat, shift, widget })) event.preventDefault()
     }
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (event.code === 'Enter') this.rippleHeld = false
-      this.pilot.release(event.code)
-    }
+    const onKeyUp = (event: KeyboardEvent) => this.releaseKey(event.code)
     const onBlur = () => this.pause()
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)

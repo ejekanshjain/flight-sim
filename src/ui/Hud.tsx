@@ -21,6 +21,7 @@ import { ApproachCard, BankIndicator, GpwsAlert } from './Guidance'
 import { MiniMap } from './MiniMap'
 import { BombPanel, CoachCard, MissionCard } from './Missions'
 import { flightModes } from './modes'
+import { PHONE_QUERY, TOUCH_QUERY, TouchControls, TouchMenu, useMedia } from './Touch'
 import { FEET_PER_METRE, FPM_PER_MS, KNOTS_PER_MS, setText, useTelemetry } from './telemetry'
 
 // The instrument panel is laid out for this width and shrinks on narrower windows
@@ -35,6 +36,25 @@ function usePanelScale() {
     return () => window.removeEventListener('resize', update)
   }, [])
   return scale
+}
+
+/** Height in pixels the instrument panel takes up on screen, or 0 while it is hidden. */
+function usePanelHeight(panel: React.RefObject<HTMLDivElement | null>) {
+  const [height, setHeight] = useState(0)
+  useEffect(() => {
+    const element = panel.current
+    if (!element) return
+    const measure = () => setHeight(element.getBoundingClientRect().height)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    window.addEventListener('resize', measure)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [panel])
+  return height
 }
 
 function light(element: HTMLElement | null, on: boolean) {
@@ -363,7 +383,8 @@ function DumpButton() {
 }
 
 /** Big airspeed and altitude figures, with the numbers a pilot would read off a GPS beside them. */
-function Readouts() {
+/** Speed, height, and climb across the top. `compact` keeps only those three, for phones. */
+function Readouts({ compact }: { compact: boolean }) {
   const airspeed = useRef<HTMLSpanElement>(null)
   const altitude = useRef<HTMLSpanElement>(null)
   const climb = useRef<HTMLSpanElement>(null)
@@ -413,7 +434,10 @@ function Readouts() {
   }, [windLevel])
   return (
     <div className="flex flex-col items-center gap-1">
-      <div className="bg-ink/75 text-marking flex items-stretch gap-5 rounded-b-md px-5 py-1.5 backdrop-blur-sm">
+      <div
+        data-compact={compact}
+        className="bg-ink/75 text-marking flex items-stretch gap-5 rounded-b-md px-5 py-1.5 backdrop-blur-sm data-[compact=true]:gap-3 data-[compact=true]:px-3 data-[compact=true]:py-1"
+      >
         {(
           [
             ['Airspeed', 'kt', airspeed],
@@ -426,13 +450,16 @@ function Readouts() {
             <span className="flex items-baseline gap-1">
               <span
                 ref={ref}
-                className="data-[on=true]:text-warn min-w-14 text-3xl font-bold tabular-nums"
+                className="data-[on=true]:text-warn min-w-14 text-3xl font-bold tabular-nums in-data-[compact=true]:min-w-10 in-data-[compact=true]:text-xl"
               />
               <span className="text-marking/60 text-sm">{unit}</span>
             </span>
           </div>
         ))}
-        <dl className="border-marking/20 grid grid-cols-[repeat(3,auto)] content-center gap-x-5 gap-y-0.5 border-l pl-5 text-sm">
+        <dl
+          hidden={compact}
+          className="border-marking/20 grid grid-cols-[repeat(3,auto)] content-center gap-x-5 gap-y-0.5 border-l pl-5 text-sm"
+        >
           {(
             [
               ['Ground speed', groundSpeed],
@@ -1155,6 +1182,14 @@ export function Hud() {
   const bombsight = useGame(state => state.bombsight)
   const scale = usePanelScale()
   const panel = useRef<HTMLDivElement>(null)
+  const panelHeight = usePanelHeight(panel)
+  const phone = useMedia(PHONE_QUERY)
+  const touch = useMedia(TOUCH_QUERY)
+  const gamepad = useGame(state => state.gamepad)
+  const instruments = useGame(state => state.instruments)
+  // Phones show the instrument panel only when asked, and shrink the cards to fit
+  const small = phone ? 'scale-60' : ''
+  const sticks = touch && !gamepad && status === 'flying'
   return (
     <div
       className="pointer-events-none absolute inset-0 transition-opacity data-[dim=true]:opacity-40"
@@ -1164,14 +1199,15 @@ export function Hud() {
       <GoalMarker panel={panel} />
       {/* Readouts, the bank arc, and notices stack down the middle so none covers another */}
       <div className="absolute top-0 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1">
-        <Readouts />
+        <Readouts compact={touch} />
+        {sticks && <TouchMenu />}
         {camera === 'chase' && !bombsight && <BankIndicator />}
         <GpwsAlert />
         <Notices spec={spec} />
         <LookHint />
       </div>
       {/* Steps and coaching sit to the left, clear of the view ahead */}
-      <div className="absolute top-4 left-4 flex flex-col gap-2">
+      <div className={`absolute top-4 left-4 flex origin-top-left flex-col gap-2 ${small}`}>
         {mission ? <MissionCard mission={mission} /> : <Checklists spec={spec} />}
         {!mission && spec.bombBay && (
           <div className="bg-paper/95 text-ink w-80 rounded-md px-4 py-3 text-sm shadow-lg">
@@ -1183,14 +1219,16 @@ export function Hud() {
       </div>
       {/* The enlarged map drops below the top bar, with the approach card beside it */}
       <div
-        className={`absolute right-4 flex gap-3 ${map === 'large' ? 'top-20 flex-row-reverse items-end' : 'top-4 flex-col items-end'}`}
+        className={`absolute right-4 flex origin-top-right gap-3 ${small} ${map === 'large' ? 'top-20 flex-row-reverse items-end' : 'top-4 flex-col items-end'}`}
       >
         {map !== 'hidden' && <MiniMap large={map === 'large'} />}
-        <ApproachCard />
+        {/* The approach card would sit under a phone's right stick */}
+        {!phone && <ApproachCard />}
         <HoverDisplay />
       </div>
       <div
         ref={panel}
+        hidden={phone && !instruments}
         className="absolute bottom-0 left-1/2 origin-bottom"
         style={{ transform: `translateX(-50%) scale(${scale})`, width: PANEL_WIDTH }}
       >
@@ -1220,6 +1258,11 @@ export function Hud() {
           <GearAndFuel spec={spec} />
         </div>
       </div>
+      {/* A tablet's sticks sit above the panel. A phone's cover its edges while it is open,
+          with the buttons put away so the screens stay readable */}
+      {sticks && (
+        <TouchControls bottom={phone ? 0 : panelHeight} buttons={!phone || !instruments} />
+      )}
     </div>
   )
 }

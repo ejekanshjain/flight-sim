@@ -53,8 +53,10 @@ export function GoalMarker({ panel }: { panel: RefObject<HTMLDivElement | null> 
   useEffect(() => {
     const element = panel.current
     if (!element) return
+    // A hidden panel, as on a phone, leaves the whole height free
     const measure = () => {
-      floor.current = element.getBoundingClientRect().top
+      const box = element.getBoundingClientRect()
+      floor.current = box.height > 0 ? box.top : window.innerHeight
     }
     measure()
     const observer = new ResizeObserver(measure)

@@ -65,6 +65,14 @@ export class Look {
     this.limit(view)
   }
 
+  /** Turns the view by `yaw` and `pitch` radians, as a controller's D-pad does while held. */
+  turn(yaw: number, pitch: number, view: LookView) {
+    this.focus = 'free'
+    this.yaw += yaw
+    this.pitch += pitch
+    this.limit(view)
+  }
+
   /** Zooms by a wheel scroll of `dy` pixels: forward zooms in, back zooms out. */
   zoom(dy: number, view: LookView) {
     const factor = Math.exp(dy * ZOOM_RATE)
